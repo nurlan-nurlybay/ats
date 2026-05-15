@@ -220,4 +220,9 @@ __marimo__/
 CLAUDE.md
 
 # data
-data/
+data/processed/*
+!data/processed/.gitkeep
+data/raw/*
+!data/raw/.gitkeep
+data/test_cvs/*
+!data/test_cvs/.gitkeep
