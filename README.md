@@ -78,12 +78,3 @@ Implement **three distinct approaches** for comparison:
 | **Architecture** | Scalability and modularity of the solution. |
 | **Code & Docs** | Cleanliness of code and clarity of documentation. |
 | **Explainability** | How understandable the agent's decisions/scores are. |
-
----
-
-### 💡 Quick Strategy Refresher for your "Vibe-coding":
-
-* **For Requirement 1:** Use `imap_tools` (it's much cleaner than raw `imaplib`).
-* **For Requirement 2:** Use `pdfplumber` for PDFs and `python-docx` for Word files.
-* **For Requirement 3.1:** `sentence-transformers` is the standard library for SBERT.
-* **For Requirement 4:** Use `docker-compose` to link the FastAPI backend and Streamlit frontend.
