@@ -1,0 +1,31 @@
+paths:
+  data_raw: data/raw
+  data_processed: data/processed
+  fake_cvs: data/fake_cvs
+  index_dir: data/processed/index
+
+models:
+  semantic:
+    name: BAAI/bge-m3
+    embedding_dimension: 1024
+    device: cuda
+    max_seq_length: 8192
+    batch_size: 8
+    normalize_embeddings: true
+  tfidf:
+    max_features: 20000
+    ngram_range: [1, 2]
+    min_df: 2
+  llm:
+    provider: openai
+    model: gpt-4o-mini
+    temperature: 0.0
+    max_tokens: 512
+
+matching:
+  top_k: 5
+  default_strategy: semantic
+
+vector_store:
+  index_type: IndexFlatIP
+  dimension: 1024

@@ -1,0 +1,50 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ats-agent"
+version = "0.1.0"
+description = "AI Recruiting Agent - Automated CV parsing and semantic matching"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    # Data Ingestion & Parsing
+    "imap-tools",      # Cleaner than built-in imaplib
+    "pdfplumber",      # Best open-source PDF text extractor
+    "python-docx",     # For parsing .docx resumes
+    
+    # NLP & Machine Learning Core
+    "scikit-learn",    # TF-IDF and baseline classifiers
+    "pandas",          # Data manipulation
+    "numpy",           # Matrix operations
+    "sentence-transformers", # SBERT embeddings
+    "faiss-cpu",       # Vector search engine for SBERT
+    "spacy",           # Basic NLP tasks (tokenization, standard NER)
+    
+    # LLM Integration
+    "openai",          # Official client for GPT/Mistral API calls
+    "tiktoken",        # Token counting for LLM prompts
+    
+    # Backend & Serving
+    "fastapi",         # REST API
+    "uvicorn",         # ASGI server for FastAPI
+    "pydantic",        # Data validation and structured outputs
+    "pydantic-settings", # Parsing .env files natively
+    "streamlit",       # Frontend UI
+    
+    # Utilities
+    "structlog",       # Structured JSON logging (bank-level standard)
+    "pyyaml"           # For reading configs/prompts.yaml
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",          # Unit testing
+    "black",           # Code formatting
+    "ruff",            # Fast linter
+    "jupyter"          # For the required Markdown/Notebook report
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
