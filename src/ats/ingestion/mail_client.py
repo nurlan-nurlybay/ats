@@ -6,6 +6,8 @@ marks the source messages as SEEN so they are not processed twice.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,14 +21,14 @@ from ats.core.logger import bind_context, clear_context, get_logger
 log = get_logger(__name__)
 
 ALLOWED_EXTENSIONS: tuple[str, ...] = (".pdf", ".docx")
-_UNSAFE_CHARS = re.compile(r"[^A-Za-z0-9._-]+")
+_UNSAFE_CHARS = re.compile(r"[^\w.-]+")
 
 
 def _safe_filename(name: str) -> str:
     """Reduce an attachment filename to its sanitized basename."""
-    base = Path(name).name
-    cleaned = _UNSAFE_CHARS.sub("_", base).strip("._")
-    return cleaned or "attachment"
+    p = Path(name)
+    stem = _UNSAFE_CHARS.sub("_", p.stem).strip("._") or "attachment"
+    return f"{stem}{p.suffix.lower()}"
 
 
 @dataclass(frozen=True)
@@ -43,6 +45,19 @@ class EmailIngestionService:
     def __init__(self, save_dir: Path | None = None) -> None:
         self.save_dir = save_dir or settings.paths.data_raw
         self.save_dir.mkdir(parents=True, exist_ok=True)
+        
+        self.hashes_file = self.save_dir / "seen_hashes.json"
+        if self.hashes_file.exists():
+            self.seen_hashes = set(json.loads(self.hashes_file.read_text(encoding="utf-8")))
+        else:
+            self.seen_hashes = set()
+            for p in self.save_dir.iterdir():
+                if p.is_file() and p.suffix.lower() in ALLOWED_EXTENSIONS:
+                    self.seen_hashes.add(hashlib.sha256(p.read_bytes()).hexdigest())
+            self._save_hashes()
+
+    def _save_hashes(self) -> None:
+        self.hashes_file.write_text(json.dumps(list(self.seen_hashes)), encoding="utf-8")
 
     def fetch_new_resumes(self) -> list[SavedAttachment]:
         """Download attachments from every UNSEEN message; mark them SEEN.
@@ -91,7 +106,20 @@ class EmailIngestionService:
 
             filename = f"{msg.uid}_{_safe_filename(att.filename)}"
             path = self.save_dir / filename
+            
+            payload_hash = hashlib.sha256(att.payload).hexdigest()
+            if payload_hash in self.seen_hashes:
+                log.info(
+                    "attachment_skipped",
+                    filename=att.filename,
+                    reason="duplicate_content",
+                )
+                continue
+                
             path.write_bytes(att.payload)
+            self.seen_hashes.add(payload_hash)
+            self._save_hashes()
+            
             log.info("attachment_saved", filename=filename, size_bytes=len(att.payload))
             saved.append(
                 SavedAttachment(

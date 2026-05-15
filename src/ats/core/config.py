@@ -37,7 +37,7 @@ class IMAPSettings(BaseSettings):
 class PathsConfig(BaseModel):
     data_raw: Path
     data_processed: Path
-    fake_cvs: Path
+    test_cvs: Path
     index_dir: Path
 
     model_config = ConfigDict(frozen=True)

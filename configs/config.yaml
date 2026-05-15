@@ -1,7 +1,7 @@
 paths:
   data_raw: data/raw
   data_processed: data/processed
-  fake_cvs: data/fake_cvs
+  test_cvs: data/test_cvs
   index_dir: data/processed/index
 
 models:
