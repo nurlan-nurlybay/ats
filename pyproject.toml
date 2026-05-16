@@ -33,6 +33,12 @@ dependencies = [
     "pydantic-settings", # Parsing .env files natively
     "streamlit",       # Frontend UI
     
+    # Persistence — Postgres + pgvector
+    "sqlalchemy[asyncio]>=2.0",   # async ORM (2.x typed)
+    "asyncpg",                    # async Postgres driver
+    "pgvector",                   # Vector column type + SQLAlchemy adapter
+    "alembic",                    # Schema migrations
+
     # Utilities
     "structlog",       # Structured JSON logging (bank-level standard)
     "pyyaml"           # For reading configs/prompts.yaml

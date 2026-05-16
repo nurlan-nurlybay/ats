@@ -2,6 +2,7 @@ paths:
   data_raw: data/raw
   data_processed: data/processed
   test_cvs: data/test_cvs
+  vacancies: data/vacancies
   index_dir: data/processed/index
 
 models:
@@ -17,15 +18,16 @@ models:
     ngram_range: [1, 2]
     min_df: 2
   llm:
-    provider: openai
-    model: gpt-4o-mini
+    provider: qwen
+    model: qwen-plus
     temperature: 0.0
-    max_tokens: 512
+    max_tokens: 1024
+    base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1
 
 matching:
   top_k: 5
   default_strategy: semantic
 
 vector_store:
-  index_type: IndexFlatIP
+  index_type: pgvector
   dimension: 1024

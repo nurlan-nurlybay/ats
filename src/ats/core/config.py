@@ -34,10 +34,58 @@ class IMAPSettings(BaseSettings):
     )
 
 
+class DBSettings(BaseSettings):
+    """Postgres connection settings, loaded from `.env`.
+
+    The URL is composed in Python so the password (a `SecretStr`) never
+    has to live in a committed config file.
+    """
+
+    user: str
+    password: SecretStr
+    db: str
+    host: str = "localhost"
+    port: int = 5432
+
+    @property
+    def url(self) -> str:
+        return (
+            f"postgresql+asyncpg://{self.user}:{self.password.get_secret_value()}"
+            f"@{self.host}:{self.port}/{self.db}"
+        )
+
+    model_config = SettingsConfigDict(
+        env_file=PROJECT_ROOT / ".env",
+        env_file_encoding="utf-8",
+        env_prefix="POSTGRES_",
+        extra="ignore",
+        frozen=True,
+    )
+
+
+class LLMSecrets(BaseSettings):
+    """LLM provider API keys, loaded from `.env`.
+
+    Kept separate from `models.llm` (YAML, non-secret tunables) so secrets
+    never leak into serialized config dumps.
+    """
+
+    dashscope_api_key: SecretStr
+
+    model_config = SettingsConfigDict(
+        env_file=PROJECT_ROOT / ".env",
+        env_file_encoding="utf-8",
+        env_prefix="",
+        extra="ignore",
+        frozen=True,
+    )
+
+
 class PathsConfig(BaseModel):
     data_raw: Path
     data_processed: Path
     test_cvs: Path
+    vacancies: Path
     index_dir: Path
 
     model_config = ConfigDict(frozen=True)
@@ -63,10 +111,11 @@ class TfidfConfig(BaseModel):
 
 
 class LLMConfig(BaseModel):
-    provider: Literal["openai", "huggingface"]
+    provider: Literal["openai", "qwen", "huggingface"]
     model: str
     temperature: float
     max_tokens: int
+    base_url: str | None = None
 
     model_config = ConfigDict(frozen=True)
 
@@ -95,6 +144,8 @@ class VectorStoreConfig(BaseModel):
 
 class Settings(BaseModel):
     imap: IMAPSettings
+    db: DBSettings
+    llm_secrets: LLMSecrets
     paths: PathsConfig
     models: ModelsConfig
     matching: MatchingConfig
@@ -119,6 +170,8 @@ def load_settings(config_path: Path | None = None) -> Settings:
 
     return Settings(
         imap=IMAPSettings(),  # type: ignore
+        db=DBSettings(),  # type: ignore
+        llm_secrets=LLMSecrets(),  # type: ignore
         paths=PathsConfig(**raw["paths"]),
         models=ModelsConfig(**raw["models"]),
         matching=MatchingConfig(**raw["matching"]),

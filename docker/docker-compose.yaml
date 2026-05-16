@@ -1,0 +1,24 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    container_name: ats-postgres
+    restart: unless-stopped
+    # env_file passes POSTGRES_USER / POSTGRES_PASSWORD / POSTGRES_DB
+    # straight to the official Postgres image, which reads them on first
+    # boot to provision the cluster. POSTGRES_HOST / POSTGRES_PORT are
+    # app-side only and are ignored here.
+    env_file:
+      - ../.env
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  pgdata:
+    name: ats_pgdata
