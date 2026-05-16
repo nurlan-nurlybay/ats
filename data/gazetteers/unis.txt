@@ -1,0 +1,72 @@
+# Seed list of universities for the bilingual NER gazetteer.
+# Tagged as ORG by the parser (matched as institution candidates).
+
+# Kazakhstan
+KazNU
+КазНУ
+Al-Farabi Kazakh National University
+Nazarbayev University
+Назарбаев Университет
+AITU
+Astana IT University
+KIMEP
+КИМЭП
+ENU
+ЕНУ
+KBTU
+КБТУ
+КазНТУ
+Satbayev University
+Сатпаев университет
+Almaty Management University
+AlmaU
+SDU
+Suleyman Demirel University
+
+# Russia
+МГУ
+Moscow State University
+СПбГУ
+МФТИ
+MIPT
+МГТУ им. Баумана
+Bauman Moscow State Technical University
+ВШЭ
+HSE
+Higher School of Economics
+МИФИ
+MEPhI
+Skoltech
+Сколтех
+ИТМО
+ITMO University
+СПбПУ
+УрФУ
+НГУ
+NSU
+Novosibirsk State University
+
+# Global
+MIT
+Massachusetts Institute of Technology
+Harvard
+Harvard University
+Stanford
+Stanford University
+Berkeley
+UC Berkeley
+Carnegie Mellon
+CMU
+Oxford
+University of Oxford
+Cambridge
+University of Cambridge
+ETH Zurich
+EPFL
+Tsinghua
+Tokyo University
+NUS
+Гарвард
+Стэнфорд
+Кэмбридж
+Оксфорд

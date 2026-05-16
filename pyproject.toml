@@ -18,9 +18,13 @@ dependencies = [
     "scikit-learn",    # TF-IDF and baseline classifiers
     "pandas",          # Data manipulation
     "numpy",           # Matrix operations
-    "sentence-transformers", # SBERT embeddings
+    "sentence-transformers", # SBERT embeddings (bge-m3)
     "faiss-cpu",       # Vector search engine for SBERT
-    "spacy",           # Basic NLP tasks (tokenization, standard NER)
+    "spacy",           # Tokenization + NER (ru_core_news_md, en_core_web_md)
+    "keybert",         # Embedding-based keyword extraction (reuses bge-m3)
+    "rapidfuzz",       # Fast fuzzy match for header dictionary
+    "langdetect",      # Per-paragraph RU/EN signal
+    "python-dateutil", # Date parsing for experience entries
     
     # LLM Integration
     "openai",          # Official client for GPT/Mistral API calls

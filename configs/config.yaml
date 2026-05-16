@@ -19,7 +19,7 @@ models:
     min_df: 2
   llm:
     provider: qwen
-    model: qwen-plus
+    model: qwen3.6-plus
     temperature: 0.0
     max_tokens: 1024
     base_url: https://dashscope-intl.aliyuncs.com/compatible-mode/v1

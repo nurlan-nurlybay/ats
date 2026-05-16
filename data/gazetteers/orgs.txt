@@ -1,0 +1,122 @@
+# Seed list of organizations for the bilingual NER gazetteer.
+# Used by PhraseMatcher (LOWER attr) so case variations are matched.
+# Recall is mostly carried by spaCy + Matcher rules; this is the safety net.
+
+# Kazakhstan / Russian banks & fintech
+Forte Bank
+ForteBank
+Forte
+Kaspi
+Kaspi.kz
+Kaspi Bank
+Halyk Bank
+Halyk Savings Bank
+Народный банк
+Сбербанк
+Sberbank
+Tinkoff
+Тинькофф
+Альфа-Банк
+Alfa-Bank
+ВТБ
+VTB
+Газпромбанк
+Райффайзенбанк
+Jusan Bank
+Bank CenterCredit
+БЦК
+Bereke Bank
+Freedom Holding
+Freedom Finance
+
+# Tech — global
+Google
+Amazon
+AWS
+Microsoft
+Meta
+Facebook
+Apple
+Netflix
+IBM
+Oracle
+SAP
+Cisco
+Intel
+NVIDIA
+AMD
+Adobe
+Salesforce
+Atlassian
+Spotify
+Uber
+Airbnb
+Dropbox
+Slack
+Twitter
+LinkedIn
+Reddit
+Twitch
+PayPal
+Stripe
+Square
+Datadog
+Snowflake
+Databricks
+Cloudflare
+Vercel
+GitHub
+GitLab
+JetBrains
+Anthropic
+OpenAI
+DeepMind
+Hugging Face
+
+# Tech — RU/KZ
+Yandex
+Яндекс
+VK
+ВКонтакте
+Mail.ru
+Rambler
+Ozon
+Wildberries
+Avito
+Beeline
+Билайн
+МегаФон
+МТС
+Tele2
+Касперский
+Kaspersky
+Лаборатория Касперского
+1С
+Сколково
+EPAM
+Luxoft
+
+# KZ tech / telecom
+DAR
+Air Astana
+Activ
+
+# Consulting / professional services
+McKinsey
+BCG
+Bain
+Deloitte
+PwC
+KPMG
+EY
+Accenture
+Capgemini
+
+# Hardware / consumer
+Tesla
+SpaceX
+Samsung
+LG
+Sony
+Huawei
+Xiaomi
