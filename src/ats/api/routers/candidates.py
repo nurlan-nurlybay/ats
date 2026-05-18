@@ -11,7 +11,6 @@ on the list endpoint to override (mostly for debugging).
 """
 from __future__ import annotations
 
-import re
 from pathlib import Path
 
 from fastapi import (
@@ -27,10 +26,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ats.api.dependencies import get_session
-from ats.api.schemas import CandidateDetail, CandidateSummary
+from ats.api.schemas import CandidateDetail, CandidateSummary, CandidateUpdate
 from ats.core.config import settings
 from ats.core.logger import get_logger
 from ats.db.models import Candidate
+from ats.ingestion.cv_store import (
+    compute_hash,
+    final_path_for,
+    sanitize_filename,
+    temp_path_for,
+)
 from ats.ingestion.parser import parse_resume
 from ats.matching.base import RESUME_CSV_PREFIX
 
@@ -40,13 +45,6 @@ router = APIRouter(prefix="/candidates", tags=["candidates"])
 _MAX_RAW_TEXT_CHARS = 3000
 _MAX_UPLOAD_BYTES = 15 * 1024 * 1024  # 15 MB
 _ALLOWED_EXTS = {".pdf", ".docx"}
-_UNSAFE_CHARS = re.compile(r"[^\w.\-]+")
-
-
-def _sanitize_filename(name: str) -> str:
-    """Mirror the Stage 1 mail_client sanitizer — preserves Cyrillic word chars."""
-    name = name.strip().replace(" ", "_")
-    return _UNSAFE_CHARS.sub("_", name) or "uploaded.bin"
 
 
 def _to_detail(c: Candidate) -> CandidateDetail:
@@ -119,8 +117,8 @@ async def get_candidate(
     status_code=status.HTTP_201_CREATED,
     summary="Upload a PDF/DOCX CV; parses + embeds inline",
     responses={
-        400: {"description": "Bad file (unsupported extension or empty)"},
-        409: {"description": "File already exists on disk"},
+        400: {"description": "Bad file (unsupported extension, empty, or parse failure)"},
+        409: {"description": "Duplicate content — already uploaded as candidate id=X"},
         413: {"description": "File too large"},
     },
 )
@@ -128,6 +126,16 @@ async def upload_candidate(
     file: UploadFile = File(..., description="PDF or DOCX resume"),
     session: AsyncSession = Depends(get_session),
 ) -> CandidateDetail:
+    """Upload + parse + insert flow.
+
+    Insert-then-rename pattern:
+      1. read bytes, hash them
+      2. SHA-256 lookup in DB; 409 if seen before (regardless of filename)
+      3. save to a temp name in `data/cvs/`
+      4. parse_resume(temp_path)
+      5. insert candidate row with source_file=temp_path + content_hash
+      6. rename temp → `{id}_{sanitized}.{ext}` and UPDATE source_file
+    """
     if not file.filename:
         raise HTTPException(400, "no filename provided")
     ext = Path(file.filename).suffix.lower()
@@ -140,25 +148,35 @@ async def upload_candidate(
     if not payload:
         raise HTTPException(400, "uploaded file is empty")
 
-    target_dir = settings.paths.cvs
-    target_dir.mkdir(parents=True, exist_ok=True)
-    target = target_dir / _sanitize_filename(file.filename)
-    if target.exists():
-        raise HTTPException(409, f"file already exists: {target.name}")
+    # Content-level dedup. Identical bytes → 409, regardless of filename.
+    digest = compute_hash(payload)
+    dupe_id = await session.scalar(
+        select(Candidate.id).where(Candidate.content_hash == digest)
+    )
+    if dupe_id is not None:
+        raise HTTPException(
+            409,
+            f"duplicate content (already uploaded as candidate id={dupe_id})",
+        )
 
-    target.write_bytes(payload)
-    log.info("candidate_upload_saved", path=str(target), bytes=len(payload))
+    cvs_dir = settings.paths.cvs
+    cvs_dir.mkdir(parents=True, exist_ok=True)
+    sanitized = sanitize_filename(file.filename)
+    temp_path = temp_path_for(cvs_dir, sanitized)
+
+    temp_path.write_bytes(payload)
+    log.info("candidate_upload_temp_saved", path=str(temp_path), bytes=len(payload))
 
     try:
-        parsed = parse_resume(target)
+        parsed = parse_resume(temp_path)
     except Exception as exc:
-        # Roll back the disk write if parsing fails — we don't want orphan files.
-        target.unlink(missing_ok=True)
+        temp_path.unlink(missing_ok=True)
         log.warning("candidate_parse_failed", err=str(exc))
         raise HTTPException(400, f"parse failed: {exc}") from exc
 
     cand = Candidate(
-        source_file=str(target),
+        source_file=str(temp_path),
+        content_hash=digest,
         name=parsed.name,
         email=parsed.email,
         raw_text=parsed.raw_text,
@@ -168,8 +186,69 @@ async def upload_candidate(
     session.add(cand)
     await session.commit()
     await session.refresh(cand)
-    log.info("candidate_uploaded", id=cand.id, name=cand.name, source_file=cand.source_file)
+
+    # Now we know the id — promote temp file to the canonical name.
+    final_path = final_path_for(cvs_dir, cand.id, sanitized)
+    try:
+        temp_path.rename(final_path)
+    except OSError as exc:
+        # The DB row exists with a temp path; not fatal, but flag it loudly so
+        # the operator can run a one-off rename. We don't roll back the insert.
+        log.error(
+            "candidate_rename_failed",
+            id=cand.id, temp=str(temp_path), target=str(final_path), err=str(exc),
+        )
+    else:
+        cand.source_file = str(final_path)
+        await session.commit()
+        await session.refresh(cand)
+
+    log.info(
+        "candidate_uploaded",
+        id=cand.id, name=cand.name, source_file=cand.source_file,
+        hash=digest[:12],
+    )
     return _to_detail(cand)
+
+
+@router.put(
+    "/{candidate_id}",
+    response_model=CandidateDetail,
+    summary="Edit candidate name/email (HR override of parser output)",
+    responses={404: {"description": "Candidate not found"}},
+)
+async def update_candidate(
+    candidate_id: int,
+    body: CandidateUpdate,
+    session: AsyncSession = Depends(get_session),
+) -> CandidateDetail:
+    """Partial update of name and/or email.
+
+    Use `null`/omit to leave a field unchanged. Pass an empty string to clear
+    a wrong NER-extracted value. Does NOT re-parse or re-embed — content is
+    parser-managed.
+    """
+    c = await session.get(Candidate, candidate_id)
+    if c is None:
+        raise HTTPException(404, f"candidate id={candidate_id} not found")
+
+    changed: list[str] = []
+    if body.name is not None:
+        new_name = body.name.strip() or None
+        if new_name != c.name:
+            c.name = new_name
+            changed.append("name")
+    if body.email is not None:
+        new_email = body.email.strip() or None
+        if new_email != c.email:
+            c.email = new_email
+            changed.append("email")
+
+    if changed:
+        await session.commit()
+        await session.refresh(c)
+        log.info("candidate_updated", id=c.id, fields=changed)
+    return _to_detail(c)
 
 
 @router.delete(

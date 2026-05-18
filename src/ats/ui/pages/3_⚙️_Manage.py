@@ -10,12 +10,14 @@ directly. The page is intentionally lean — no validation duplication.
 from __future__ import annotations
 
 import os
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
 import streamlit as st
 
 from ats.ui.api_client import ApiClient, ApiError
+from ats.ui.components import render_parsed_json
 
 st.set_page_config(
     page_title="Manage — ATS",
@@ -33,6 +35,60 @@ def _refresh() -> None:
     """Drop the page-level caches and rerun."""
     st.cache_data.clear()
     st.rerun()
+
+
+@st.cache_data(show_spinner=False)
+def _candidate_detail(cid: int) -> dict[str, Any]:
+    """Fetch + cache full candidate detail. Invalidated by `_refresh()`."""
+    return _api().get_candidate(cid)
+
+
+def _bulk_delete_bar(
+    kind: str,                       # "vacancy" or "candidate"
+    all_ids: list[int],
+    delete_fn,                       # api.delete_vacancy / api.delete_candidate
+) -> None:
+    """Render the bulk-delete control + confirmation flow above a list.
+
+    Checkboxes per row live in session_state under `bulk_{kind}_{id}` and are
+    set by `_bulk_checkbox(...)` next to each row. This helper reads them,
+    shows a count, asks for confirm, then loops the delete API.
+    """
+    selected = [i for i in all_ids if st.session_state.get(f"bulk_{kind}_{i}", False)]
+    confirm_key = f"confirm_bulk_{kind}"
+    n = len(selected)
+
+    if not st.session_state.get(confirm_key, False):
+        if st.button(
+            f"🗑️ Удалить выбранное ({n})",
+            disabled=n == 0,
+            type="primary",
+            key=f"bulk_btn_{kind}",
+        ):
+            st.session_state[confirm_key] = True
+            st.rerun()
+        return
+
+    st.warning(f"Удалить {n} элемент(ов)? Действие необратимо.")
+    yes, no = st.columns([1, 1])
+    if yes.button("✅ Да, удалить", key=f"bulk_yes_{kind}", type="primary"):
+        ok, errs = 0, []
+        for i in selected:
+            try:
+                delete_fn(i)
+                ok += 1
+            except ApiError as e:
+                errs.append((i, str(e)))
+        for i in all_ids:
+            st.session_state.pop(f"bulk_{kind}_{i}", None)
+        st.session_state.pop(confirm_key, None)
+        st.toast(f"Удалено: {ok}; ошибок: {len(errs)}", icon="🗑️")
+        for i, msg in errs:
+            st.error(f"id={i}: {msg}")
+        _refresh()
+    if no.button("❌ Отмена", key=f"bulk_no_{kind}"):
+        st.session_state.pop(confirm_key, None)
+        st.rerun()
 
 
 # ─── Vacancies tab ──────────────────────────────────────────────────────────
@@ -76,9 +132,17 @@ def _vacancies_tab() -> None:
         st.info("No vacancies yet.")
         return
 
+    _bulk_delete_bar("vacancy", [v["id"] for v in vacancies], api.delete_vacancy)
+
     edit_id = st.session_state.get("edit_vac_id")
     for v in vacancies:
-        with st.container(border=True):
+        sel_col, row_col = st.columns([0.04, 0.96])
+        with sel_col:
+            st.checkbox(
+                "select", key=f"bulk_vacancy_{v['id']}",
+                label_visibility="collapsed",
+            )
+        with row_col, st.container(border=True):
             cols = st.columns([0.55, 0.25, 0.10, 0.10])
             cols[0].markdown(f"**#{v['id']} · {v['title']}**")
             cols[1].caption(
@@ -215,22 +279,91 @@ def _candidates_tab() -> None:
         st.info("No candidates yet. Upload a CV above.")
         return
 
+    _bulk_delete_bar(
+        "candidate", [c["id"] for c in candidates], api.delete_candidate,
+    )
+
+    # Group by email so a person who submitted multiple CVs appears once.
+    NO_EMAIL = "(нет email)"
+    by_email: dict[str, list[dict]] = defaultdict(list)
     for c in candidates:
+        by_email[c.get("email") or NO_EMAIL].append(c)
+    # emails with addresses first (alphabetical), no-email bucket last
+    ordered_keys = sorted(
+        by_email.keys(), key=lambda k: (k == NO_EMAIL, k.lower()),
+    )
+
+    edit_id = st.session_state.get("edit_cand_id")
+    for email_key in ordered_keys:
+        rows = by_email[email_key]
         with st.container(border=True):
-            cols = st.columns([0.4, 0.4, 0.1, 0.1])
-            cols[0].markdown(f"**{c.get('name') or '(no name)'}**")
-            cols[1].caption(
-                f"{c.get('email') or 'no email'} · "
-                f"`{Path(c['source_file']).name}`"
+            st.markdown(
+                f"**{email_key}** · {len(rows)} резюме"
             )
-            cols[2].caption(f"id={c['id']}")
-            if cols[3].button("🗑️", key=f"del_c_{c['id']}", type="secondary"):
-                try:
-                    api.delete_candidate(c["id"])
-                    st.toast(f"Deleted candidate #{c['id']}", icon="🗑️")
-                    _refresh()
-                except ApiError as e:
-                    st.error(str(e))
+            for c in rows:
+                _render_candidate_row(api, c, edit_id)
+
+
+def _render_candidate_row(
+    api: ApiClient, c: dict[str, Any], edit_id: int | None,
+) -> None:
+    sel_col, row_col = st.columns([0.04, 0.96])
+    with sel_col:
+        st.checkbox(
+            "select", key=f"bulk_candidate_{c['id']}",
+            label_visibility="collapsed",
+        )
+    with row_col, st.container(border=True):
+        cols = st.columns([0.45, 0.35, 0.10, 0.05, 0.05])
+        cols[0].markdown(f"**{c.get('name') or 'Not Found'}**")
+        cols[1].caption(f"`{Path(c['source_file']).name}`")
+        cols[2].caption(f"id={c['id']}")
+        if cols[3].button("✏️", key=f"edit_c_{c['id']}", help="Edit name/email"):
+            st.session_state["edit_cand_id"] = c["id"]
+            st.rerun()
+        if cols[4].button("🗑️", key=f"del_c_{c['id']}", type="secondary"):
+            try:
+                api.delete_candidate(c["id"])
+                st.toast(f"Deleted candidate #{c['id']}", icon="🗑️")
+                _refresh()
+            except ApiError as e:
+                st.error(str(e))
+
+        # Inline edit form — only the row whose ✏️ was clicked
+        if edit_id == c["id"]:
+            with st.form(f"edit_cand_form_{c['id']}", clear_on_submit=False):
+                e_name = st.text_input(
+                    "Name", value=c.get("name") or "",
+                    help="Leave empty to clear (e.g. parser picked garbage).",
+                )
+                e_email = st.text_input(
+                    "Email", value=c.get("email") or "",
+                )
+                save_col, cancel_col = st.columns(2)
+                if save_col.form_submit_button("💾 Save", type="primary"):
+                    try:
+                        api.update_candidate(
+                            c["id"], name=e_name.strip(), email=e_email.strip(),
+                        )
+                        st.session_state.pop("edit_cand_id", None)
+                        st.success("Saved.")
+                        _refresh()
+                    except ApiError as e:
+                        st.error(str(e))
+                if cancel_col.form_submit_button("Cancel"):
+                    st.session_state.pop("edit_cand_id", None)
+                    st.rerun()
+
+        with st.expander("▾ Показать детали"):
+            try:
+                detail = _candidate_detail(c["id"])
+            except ApiError as e:
+                st.error(str(e))
+            else:
+                render_parsed_json(
+                    detail.get("parsed_json"),
+                    detail.get("raw_text_excerpt"),
+                )
 
 
 def main() -> None:

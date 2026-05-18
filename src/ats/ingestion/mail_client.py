@@ -1,100 +1,76 @@
 """IMAP ingestion: pull unseen resume attachments from the mailbox.
 
 Connects with credentials from `settings.imap`, fetches UNSEEN messages,
-saves any `.pdf` / `.docx` attachments to `settings.paths.cvs`, and
-marks the source messages as SEEN so they are not processed twice.
+saves `.pdf` / `.docx` attachments to `settings.paths.cvs` (under a temp
+name — the Celery task that called us renames them to `{id}_{name}.{ext}`
+after the DB row is inserted), and marks the source messages as SEEN.
 
-Hash self-healing: on init, if the number of CV files on disk does not
-match the number of entries in `seen_hashes.json`, the hash set is wiped
-and recalculated from the files currently on disk.
+Content-level dedup is **DB-backed** since Stage 7. Before saving an
+attachment to disk we hash its bytes and look up `candidates.content_hash`;
+if a row already has the same hash, the attachment is skipped silently.
 """
 from __future__ import annotations
 
-import hashlib
-import json
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
 from imap_tools import AND, MailBox
 from imap_tools.message import MailMessage
+from sqlalchemy import select
 
 from ats.core.config import settings
 from ats.core.logger import bind_context, clear_context, get_logger
+from ats.db.base import SessionLocal
+from ats.db.models import Candidate
+from ats.ingestion.cv_store import compute_hash, sanitize_filename, temp_path_for
 
 log = get_logger(__name__)
 
 ALLOWED_EXTENSIONS: tuple[str, ...] = (".pdf", ".docx")
-_UNSAFE_CHARS = re.compile(r"[^\w.-]+")
-
-
-def _safe_filename(name: str) -> str:
-    """Reduce an attachment filename to its sanitized basename."""
-    p = Path(name)
-    stem = _UNSAFE_CHARS.sub("_", p.stem).strip("._") or "attachment"
-    return f"{stem}{p.suffix.lower()}"
 
 
 @dataclass(frozen=True)
 class SavedAttachment:
+    """One PDF/DOCX successfully written to disk under a temp filename.
+
+    The Celery task receives these, parses them, inserts a Candidate row,
+    and renames the file to `{candidate_id}_{sanitized}.{ext}`.
+    """
+
     uid: str
     sender: str
     subject: str
     path: Path
+    content_hash: str
+    sanitized_basename: str
 
 
 class EmailIngestionService:
-    """Fetch new resume attachments from the configured IMAP mailbox."""
+    """Fetch new resume attachments from the configured IMAP mailbox.
+
+    Stateless on disk — no more `seen_hashes.json`. Each `fetch_new_resumes()`
+    call opens a DB session, checks `candidates.content_hash` per attachment,
+    and only writes the new ones to disk under a `_tmp_*` filename. The
+    caller (Celery task) is responsible for parsing + insert + rename.
+    """
 
     def __init__(self, save_dir: Path | None = None) -> None:
         self.save_dir = save_dir or settings.paths.cvs
         self.save_dir.mkdir(parents=True, exist_ok=True)
 
-        self.hashes_file = self.save_dir / "seen_hashes.json"
-        self._load_or_heal_hashes()
+    async def _hash_already_in_db(self, digest: str) -> int | None:
+        """Return candidate id matching this hash, or None."""
+        async with SessionLocal() as session:
+            return await session.scalar(
+                select(Candidate.id).where(Candidate.content_hash == digest)
+            )
 
-    def _cv_files(self) -> list[Path]:
-        """Return all CV files on disk in the save directory."""
-        return [
-            p for p in self.save_dir.iterdir()
-            if p.is_file() and p.suffix.lower() in ALLOWED_EXTENSIONS
-        ]
-
-    def _load_or_heal_hashes(self) -> None:
-        """Load hashes from disk. Self-heal if count mismatches files on disk."""
-        files = self._cv_files()
-
-        if self.hashes_file.exists():
-            try:
-                stored = set(json.loads(self.hashes_file.read_text(encoding="utf-8")))
-            except (json.JSONDecodeError, TypeError):
-                stored = set()
-
-            if len(stored) == len(files):
-                self.seen_hashes = stored
-                return
-            else:
-                log.warning(
-                    "hash_mismatch_healing",
-                    stored_hashes=len(stored),
-                    files_on_disk=len(files),
-                )
-
-        # Rebuild from scratch
-        self.seen_hashes: set[str] = set()
-        for p in files:
-            self.seen_hashes.add(hashlib.sha256(p.read_bytes()).hexdigest())
-        self._save_hashes()
-        log.info("hashes_rebuilt", count=len(self.seen_hashes))
-
-    def _save_hashes(self) -> None:
-        self.hashes_file.write_text(json.dumps(list(self.seen_hashes)), encoding="utf-8")
-
-    def fetch_new_resumes(self) -> list[SavedAttachment]:
+    async def fetch_new_resumes(self) -> list[SavedAttachment]:
         """Download attachments from every UNSEEN message; mark them SEEN.
 
-        Returns the list of saved attachments. Errors processing a single
-        message are logged and do not abort the rest of the batch.
+        Returns the list of saved attachments (under temp filenames). Errors
+        processing a single message are logged and do not abort the rest of
+        the batch.
         """
         cfg = settings.imap
         saved: list[SavedAttachment] = []
@@ -106,7 +82,7 @@ class EmailIngestionService:
             for msg in box.fetch(AND(seen=False), mark_seen=True):
                 bind_context(uid=msg.uid, subject=msg.subject)
                 try:
-                    found = self._save_attachments(msg)
+                    found = await self._save_attachments(msg)
                     saved.extend(found)
                     log.info(
                         "email_processed",
@@ -118,10 +94,14 @@ class EmailIngestionService:
                 finally:
                     clear_context()
 
-        log.info("ingestion_complete", emails_with_attachments=len({s.uid for s in saved}), files_saved=len(saved))
+        log.info(
+            "ingestion_complete",
+            emails_with_attachments=len({s.uid for s in saved}),
+            files_saved=len(saved),
+        )
         return saved
 
-    def _save_attachments(self, msg: MailMessage) -> list[SavedAttachment]:
+    async def _save_attachments(self, msg: MailMessage) -> list[SavedAttachment]:
         saved: list[SavedAttachment] = []
         for att in msg.attachments:
             if not att.filename:
@@ -135,40 +115,54 @@ class EmailIngestionService:
                 )
                 continue
 
-            filename = f"{msg.uid}_{_safe_filename(att.filename)}"
-            path = self.save_dir / filename
-
-            payload_hash = hashlib.sha256(att.payload).hexdigest()
-            if payload_hash in self.seen_hashes:
+            digest = compute_hash(att.payload)
+            dupe_id = await self._hash_already_in_db(digest)
+            if dupe_id is not None:
                 log.info(
                     "attachment_skipped",
                     filename=att.filename,
                     reason="duplicate_content",
+                    existing_candidate_id=dupe_id,
                 )
                 continue
 
-            path.write_bytes(att.payload)
-            self.seen_hashes.add(payload_hash)
-            self._save_hashes()
+            sanitized = sanitize_filename(att.filename)
+            temp_path = temp_path_for(self.save_dir, sanitized)
+            temp_path.write_bytes(att.payload)
 
-            log.info("attachment_saved", filename=filename, size_bytes=len(att.payload))
+            log.info(
+                "attachment_saved_temp",
+                temp=temp_path.name,
+                size_bytes=len(att.payload),
+                hash=digest[:12],
+            )
             saved.append(
                 SavedAttachment(
                     uid=msg.uid or "unknown_uid",
                     sender=msg.from_,
                     subject=msg.subject,
-                    path=path,
+                    path=temp_path,
+                    content_hash=digest,
+                    sanitized_basename=sanitized,
                 )
             )
         return saved
 
 
 if __name__ == "__main__":
+    import asyncio
+
     from ats.core.logger import configure_logging
 
     configure_logging(level="INFO", json_output=False)
     service = EmailIngestionService()
-    results = service.fetch_new_resumes()
+    results = asyncio.run(service.fetch_new_resumes())
     log.info("script_done", count=len(results))
     for r in results:
-        log.info("saved", path=str(r.path), sender=r.sender, subject=r.subject)
+        log.info(
+            "saved",
+            path=str(r.path),
+            sender=r.sender,
+            subject=r.subject,
+            sanitized=r.sanitized_basename,
+        )

@@ -23,6 +23,7 @@ from ats.core.logger import (
 )
 from ats.db.base import SessionLocal
 from ats.db.models import Candidate
+from ats.ingestion.cv_store import compute_hash
 from ats.ingestion.parser.pipeline import parse_resume
 from ats.ingestion.parser.schema import ParsedResume
 
@@ -33,6 +34,11 @@ ALLOWED_EXTENSIONS = {".pdf", ".docx"}
 
 async def _upsert(parsed: ParsedResume, force: bool) -> bool:
     """Insert candidate row. Returns True iff a row was written."""
+    source_path = Path(parsed.source_file)
+    content_hash = (
+        compute_hash(source_path.read_bytes()) if source_path.exists() else None
+    )
+
     async with SessionLocal() as session:
         existing = await session.scalar(
             select(Candidate.id).where(Candidate.source_file == parsed.source_file)
@@ -54,6 +60,7 @@ async def _upsert(parsed: ParsedResume, force: bool) -> bool:
                 name=parsed.name,
                 email=parsed.email,
                 source_file=parsed.source_file,
+                content_hash=content_hash,
                 raw_text=parsed.raw_text,
                 embedding=parsed.embedding,
                 parsed_json=parsed.model_dump(exclude={"raw_text", "embedding"}),
@@ -65,6 +72,7 @@ async def _upsert(parsed: ParsedResume, force: bool) -> bool:
             source=parsed.source_file,
             name=parsed.name,
             skills=len(parsed.skills),
+            hash=content_hash[:12] if content_hash else None,
         )
         return True
 

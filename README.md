@@ -78,29 +78,23 @@ ATS-система с двуязычной (RU/EN) обработкой резю
 ### Stage 1 — Ингестия писем
 
 `src/ats/ingestion/mail_client.py` — IMAP-клиент через `imap_tools`. Подключается к
-Gmail, забирает все UNSEEN-сообщения, сохраняет PDF/DOCX-вложения в `data/cvs/` с
-именами `{uid}_{sanitized_name}.{ext}` — в ту же директорию, куда складываются и CV,
-загруженные через UI. Sanitizer регулярки сохраняет кириллицу.
-Дубликаты отсеиваются по SHA-256 (`data/cvs/seen_hashes.json`). После успешного
-сохранения письма помечаются прочитанными. Ошибки внутри одного письма не валят весь
-батч — фиксируются в логах и пропускаются.
-
-**Self-heal хэшей при старте** — `EmailIngestionService.__init__` сравнивает
-количество `.pdf`/`.docx` файлов в `data/cvs/` с длиной массива в `seen_hashes.json`.
-При несовпадении массив очищается и пересчитывается с нуля. Это страхует от ситуации,
-когда CV удалили вручную (или наоборот, добавили в обход IMAP), а `seen_hashes.json`
-остался прежним. Хук `@app.on_after_configure.connect` в `tasks.py` инстанцирует
-сервис при старте worker-контейнера — heal происходит до первого beat-тика.
+Gmail, забирает все UNSEEN-сообщения, сохраняет PDF/DOCX-вложения во временный файл в
+`data/cvs/`. SHA-256 дедупликация через колонку `candidates.content_hash` в Postgres
+(уникальный индекс) — дубликаты пропускаются ещё до парсинга независимо от имени файла.
+После парсинга файл переименовывается в `{candidate_id}_{sanitized}.{ext}`. Письма
+помечаются прочитанными после успешной обработки. Ошибки внутри одного письма не валят
+весь батч.
 
 ### Stage 1.5 — Postgres + pgvector
 
 Две таблицы:
 
 * `vacancies(id, title, experience, description, source_filename, embedding vector(1024), created_at)`
-* `candidates(id, name, email, source_file, raw_text, embedding vector(1024), parsed_json jsonb, created_at)`
+* `candidates(id, name, email, source_file, content_hash varchar(64), raw_text, embedding vector(1024), parsed_json jsonb, created_at)`
 
-Естественные ключи дедупликации: `vacancies.source_filename` и
-`candidates.source_file` — оба `UNIQUE`. Эмбеддинги nullable, заполняются
+Ключи дедупликации: `vacancies.source_filename` UNIQUE и `candidates.content_hash` UNIQUE
+(SHA-256 байт файла). `candidates.source_file` по-прежнему хранит путь к файлу, но
+деdup перенесён на `content_hash` — переименованный файл не пройдёт дважды. Эмбеддинги nullable, заполняются
 post-hoc при импорте/парсинге. `parsed_json` хранит весь `ParsedResume` (минус
 `raw_text` и `embedding`, у которых свои колонки), чтобы UI не перепарсивал резюме.
 
@@ -186,8 +180,40 @@ post-hoc при импорте/парсинге. `parsed_json` хранит ве
 * **Единая директория `data/cvs/`** — Gmail-ингестия и UI-загрузка теперь пишут в
   одно место. Старая `data/raw/` удалена. `data/cvs/*` целиком gitignored
   (только `.gitkeep` отслеживается) — реальные CV больше не утекают в репозиторий.
-* **Self-heal `seen_hashes.json`** — см. Stage 1. Срабатывает eagerly на старте
-  worker'а через celery-сигнал `on_after_configure`.
+* **Дедупликация через `seen_hashes.json`** — файл-based хранение SHA-256 появилось в
+  Stage 6 и заменено DB-based `content_hash` в Stage 7. Файл больше не создаётся.
+
+### Stage 7 — Управление кандидатами (Candidate Management Overhaul)
+
+* **Content-hash дедупликация** (`src/ats/ingestion/cv_store.py`) — SHA-256 байт файла
+  хранится в `candidates.content_hash` (UNIQUE-индекс в Postgres). Оба пути ингестии
+  (UI-загрузка и Gmail) используют один и тот же механизм. Один и тот же файл,
+  переименованный, даёт 409. Старый файл `data/cvs/seen_hashes.json` удалён.
+  Миграция: `c1a2b3d4e5f6_add_candidate_content_hash.py`.
+
+* **Паттерн `{id}_{sanitized}.{ext}`** — insert-then-rename: файл сначала сохраняется под
+  временным именем (`_tmp_{uuid8}_{sanitized}`), парсится, вставляется в БД, а затем
+  переименовывается в `{candidate_id}_{sanitized}.{ext}`. Путь `source_file` обновляется.
+
+* **Точное извлечение имени** (`src/ats/ingestion/parser/ner.py:find_name`) — строгие
+  правила: 2–3 токена, каждый ≥ 2 символов, все токены единообразно `Capitalized` **ИЛИ**
+  все `ALLCAPS` (смешение запрещено). Нет токена без правил — `None`. UI показывает
+  "Not Found" вместо мусорных строк вроде "рынка и покупательского".
+
+* **PUT /candidates/{id}** — HR может исправить имя/email, неверно извлечённые NER.
+  Пересчёт эмбеддинга не происходит — контент не менялся.
+
+* **Manage → Показать детали** — строки кандидатов на странице Manage получили
+  экспандер "▾ Показать детали" (Skills / Experience / Education / Raw) — та же
+  `render_parsed_json()`, что в результатах поиска.
+
+* **Группировка по email** — несколько резюме от одного кандидата показываются под
+  одним заголовком `email · N резюме`. Группы с email идут первыми (алфавитно),
+  без email — последними.
+
+* **Массовое удаление** — чекбокс на каждой строке + "🗑️ Удалить выбранное (N)" с
+  подтверждением для вакансий и кандидатов. Ошибки на отдельных записях выводятся
+  как toast; батч не останавливается.
 
 ---
 
@@ -395,7 +421,8 @@ PYTHONPATH=src streamlit run src/ats/ui/app.py             # UI на :8501
 | `DELETE` | `/vacancies/{id}` | Удалить |
 | `GET` | `/candidates` | Список (`?include_eval=false` по умолчанию исключает Resume.csv) |
 | `GET` | `/candidates/{id}` | Полный кандидат с `parsed_json` + 3000-char excerpt |
-| `POST` | `/candidates` | Multipart-загрузка PDF/DOCX, парсинг inline |
+| `POST` | `/candidates` | Multipart-загрузка PDF/DOCX, парсинг inline; 409 если content_hash уже в БД |
+| `PUT` | `/candidates/{id}` | Исправить имя/email (HR-правка, без пересчёта эмбеддинга) |
 | `DELETE` | `/candidates/{id}` | `?keep_file=true` чтобы оставить файл на диске |
 | `POST` | `/ingestion/pull` | Триггер Gmail-pull + парсинг через Celery; 202 + `task_id` |
 | `GET` | `/ingestion/pull/{task_id}` | Статус и результат запущенного pull-таска |
@@ -456,7 +483,7 @@ HF_HUB_OFFLINE=1 PYTHONPATH=src python -m ats.ingestion.parser --force cv.pdf
 ### Ингестия из Gmail
 
 ```bash
-PYTHONPATH=src python -m ats.ingestion.mail_client  # забрать UNSEEN, сохранить в data/raw/
+PYTHONPATH=src python -m ats.ingestion.mail_client  # забрать UNSEEN, сохранить в data/cvs/
 ```
 
 ---
@@ -468,8 +495,9 @@ src/ats/
   core/         # config, logger, prompts loader
   db/           # SQLAlchemy модели + async engine/session
   ingestion/
-    mail_client.py        # Gmail IMAP + self-heal seen_hashes.json
+    mail_client.py        # Gmail IMAP, async fetch, DB-backed content_hash dedup
     tasks.py              # Celery app + Beat schedule (5m) + pull_and_parse_cvs
+    cv_store.py           # sanitize_filename, compute_hash, temp_path_for, final_path_for
     parser/               # extract → segment → ner → skills → embed → pipeline
   matching/
     base.py     # MatchingStrategy ABC + CandidateMatch + RESUME_CSV_PREFIX
@@ -500,7 +528,7 @@ configs/
 
 data/
   cvs/                # unified: Gmail-ingested + UI-uploaded (git-ignored, кроме .gitkeep)
-                      # содержит seen_hashes.json для IMAP-дедупликации
+                      # файлы именуются {candidate_id}_{sanitized}.{ext}
   vacancies/          # production вакансии (8 шт, git-tracked)
   eval/
     Resume.csv        # 2,484 размеченных резюме (git-ignored, 60 MB)

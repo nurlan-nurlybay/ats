@@ -22,6 +22,7 @@ __all__ = [
     "VacancyUpdate",
     "CandidateSummary",
     "CandidateDetail",
+    "CandidateUpdate",
 ]
 
 
@@ -95,5 +96,18 @@ class CandidateDetail(BaseModel):
         description="First 3000 chars of raw_text — for UI display only",
     )
     created_at: datetime
+
+    model_config = ConfigDict(frozen=True)
+
+
+class CandidateUpdate(BaseModel):
+    """Manual HR-side edit of name/email. Other fields stay parser-managed.
+
+    Empty-string values are accepted and stored as NULL (so the UI can clear
+    a wrong name). Use `None` (omit the field) to leave it unchanged.
+    """
+
+    name: str | None = Field(default=None, max_length=256)
+    email: str | None = Field(default=None, max_length=256)
 
     model_config = ConfigDict(frozen=True)

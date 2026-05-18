@@ -46,6 +46,13 @@ class Candidate(Base):
     source_file: Mapped[str] = mapped_column(
         String(1024), unique=True, nullable=False, index=True
     )
+    # SHA-256 hexdigest of the original file bytes. Single source of truth
+    # for content-level dedup across both Gmail ingestion and UI upload.
+    # Nullable for the migration backfill window only; once backfilled it is
+    # effectively NOT NULL (every new insert sets it).
+    content_hash: Mapped[str | None] = mapped_column(
+        String(64), unique=True, nullable=True, index=True
+    )
     raw_text: Mapped[str] = mapped_column(Text, nullable=False)
     embedding: Mapped[list[float] | None] = mapped_column(
         Vector(EMBEDDING_DIM), nullable=True

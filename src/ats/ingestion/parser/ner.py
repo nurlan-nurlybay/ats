@@ -166,20 +166,53 @@ def _dedupe(entities: list[Entity]) -> list[Entity]:
 
 
 # --- Name extraction ---
+#
+# Precision over recall. Rules (Stage 7):
+#   * 2 OR 3 tokens (no 1, no 4+).
+#   * Each token ≥ 2 characters.
+#   * All tokens uniformly Capitalized (Foo) OR uniformly ALLCAPS (FOO).
+#     Mixed styles within one name fail validation.
+#   * Cyrillic AND Latin scripts; a single internal hyphen permitted
+#     (Анна-Мария / Mary-Jane).
+#   * No digits, punctuation, or other noise tokens.
+#   * If no candidate passes, return None — the UI renders "Not Found".
 
-_NAME_REGEX = re.compile(
-    r"^([A-ZА-ЯЁ][a-zа-яё]+(?:[-‑][A-ZА-ЯЁ][a-zа-яё]+)?"
-    r"\s+[A-ZА-ЯЁ][a-zа-яё]+(?:\s+[A-ZА-ЯЁ][a-zа-яё]+)?)$",
+_NAME_TOKEN_CAPITAL = re.compile(
+    r"^[A-ZА-ЯЁ][a-zа-яё]+(?:[-‑][A-ZА-ЯЁ][a-zа-яё]+)?$",
     re.UNICODE,
 )
+_NAME_TOKEN_ALLCAPS = re.compile(
+    r"^[A-ZА-ЯЁ]{2,}(?:[-‑][A-ZА-ЯЁ]{2,})?$",
+    re.UNICODE,
+)
+
+
+def _validate_name(candidate: str) -> str | None:
+    """Return `candidate` only if it matches the strict Stage-7 name rules."""
+    if not candidate:
+        return None
+    tokens = candidate.split()
+    if not 2 <= len(tokens) <= 3:
+        return None
+    if any(len(t) < 2 for t in tokens):
+        return None
+    if all(_NAME_TOKEN_CAPITAL.fullmatch(t) for t in tokens):
+        return candidate
+    if all(_NAME_TOKEN_ALLCAPS.fullmatch(t) for t in tokens):
+        return candidate
+    return None
 
 
 def find_name(top_lines: list[Line]) -> str | None:  # noqa: F821 (forward ref)
     """Extract candidate name from CV header (first 5 lines).
 
-    spaCy PER spans can spill into the line below (city, role) when the
-    name and city sit on consecutive lines. We split entity text on
-    newline and take just the first segment.
+    Two-step matching, both gated by `_validate_name`:
+      1. Run both spaCy models on the header; check each PER/PERSON entity
+         (just its first newline-segment — entities can spill into the next
+         line of city/role).
+      2. Try the first 3 lines verbatim.
+
+    Returns None if no candidate clears the strict rules.
     """
     if not top_lines:
         return None
@@ -187,26 +220,21 @@ def find_name(top_lines: list[Line]) -> str | None:  # noqa: F821 (forward ref)
     snippet = "\n".join(line.text for line in top_lines[:5])
     nlp_ru, nlp_en = _load_models()
 
-    best: str | None = None
     for nlp in (nlp_ru, nlp_en):
         doc = nlp(snippet)
         for ent in doc.ents:
             if ent.label_ in ("PER", "PERSON"):
                 clean = ent.text.split("\n")[0].strip()
-                words = clean.split()
-                if 2 <= len(words) <= 4:
-                    return clean
-                if best is None and clean:
-                    best = clean
-
-    if best is not None:
-        return best
+                validated = _validate_name(clean)
+                if validated is not None:
+                    return validated
 
     for line in top_lines[:3]:
         first = line.text.split("\n")[0].strip()
-        match = _NAME_REGEX.match(first)
-        if match:
-            return match.group(1)
+        validated = _validate_name(first)
+        if validated is not None:
+            return validated
+
     return None
 
 

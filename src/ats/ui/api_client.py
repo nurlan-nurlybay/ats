@@ -88,6 +88,20 @@ class ApiClient:
             params={"keep_file": str(keep_file).lower()},
         )
 
+    def update_candidate(
+        self,
+        candidate_id: int,
+        *,
+        name: str | None = None,
+        email: str | None = None,
+    ) -> dict[str, Any]:
+        """Patch a candidate row. Omit a field to leave it unchanged; pass an
+        empty string to clear it."""
+        payload = {
+            k: v for k, v in {"name": name, "email": email}.items() if v is not None
+        }
+        return self._request("PUT", f"/candidates/{candidate_id}", json=payload)
+
     def get_recommendations(
         self,
         *,

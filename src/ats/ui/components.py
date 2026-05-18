@@ -122,7 +122,7 @@ def render_candidate_card(
 ) -> None:
     with st.container(border=True):
         short = Path(match.get("source_file") or "").name or "(no source file)"
-        name = match.get("name") or "Unknown"
+        name = match.get("name") or "Not Found"
         email = match.get("email")
         strategy = match.get("strategy", "?")
         score = float(match.get("score", 0.0))

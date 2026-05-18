@@ -49,6 +49,9 @@ services:
     volumes:
       # alembic env.py imports ats.core.config.settings, which loads config.yaml
       - ../configs:/app/configs:ro
+      # Stage 7 migration backfills content_hash by reading each candidate's
+      # source_file from disk. Read-only is fine — no writes from migrations.
+      - ../data:/app/data:ro
     command: alembic upgrade head
     restart: "no"
 
