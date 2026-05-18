@@ -109,6 +109,14 @@ class ApiClient:
             params["retriever"] = retriever
         return self._get("/recommendations", params=params)
 
+    def trigger_pull(self) -> dict[str, Any]:
+        """Trigger a Gmail pull + parse task. Returns ``{status, task_id}``."""
+        return self._request("POST", "/ingestion/pull")
+
+    def poll_pull_status(self, task_id: str) -> dict[str, Any]:
+        """Check the status of a pull task."""
+        return self._get(f"/ingestion/pull/{task_id}")
+
     # ── internals ──────────────────────────────────────────────────────────
 
     def _get(self, path: str, params: dict[str, Any] | None = None) -> Any:

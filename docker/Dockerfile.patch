@@ -1,0 +1,14 @@
+# Incremental patch on top of the existing docker-api:latest.
+# Used only for Stage 6 — the old image already has the full ML stack;
+# this layer just adds `celery[redis]` and the updated source code.
+#
+# Delete this file once the next clean full build succeeds.
+FROM docker-api:latest
+
+# Single new dependency: ~10 MB, one metadata round-trip.
+RUN pip install --no-cache-dir "celery[redis]"
+
+# Refresh source code to pick up Stage 5 + Stage 6 edits.
+COPY src/ /app/src/
+
+CMD ["uvicorn", "ats.api.app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]

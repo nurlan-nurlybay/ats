@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from ats.api import errors
-from ats.api.routers import candidates, health, recommendations, vacancies
+from ats.api.routers import candidates, health, ingestion, recommendations, vacancies
 from ats.core.logger import bind_context, clear_context, configure_logging, get_logger
 from ats.db.base import SessionLocal
 from ats.matching import MATCHERS, TfidfMatcher
@@ -88,7 +88,7 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
-        allow_methods=["GET"],
+        allow_methods=["GET", "POST", "PUT", "DELETE"],
         allow_headers=["*"],
     )
     app.add_middleware(_RequestContextMiddleware)
@@ -98,6 +98,7 @@ def create_app() -> FastAPI:
     app.include_router(vacancies.router)
     app.include_router(candidates.router)
     app.include_router(recommendations.router)
+    app.include_router(ingestion.router)
     return app
 
 

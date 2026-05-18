@@ -82,7 +82,6 @@ class LLMSecrets(BaseSettings):
 
 
 class PathsConfig(BaseModel):
-    data_raw: Path
     data_processed: Path
     cvs: Path
     vacancies: Path

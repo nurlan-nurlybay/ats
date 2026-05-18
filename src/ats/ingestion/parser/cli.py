@@ -1,7 +1,7 @@
 """CLI driver for the resume parser.
 
 Usage:
-    python -m ats.ingestion.parser                          # scan data/raw/
+    python -m ats.ingestion.parser                          # scan data/cvs/
     python -m ats.ingestion.parser path/to/cv.pdf ...       # specific paths
     python -m ats.ingestion.parser --dry-run path/to/cv.pdf # don't write DB
     python -m ats.ingestion.parser --force                  # reparse existing
@@ -118,7 +118,7 @@ def main() -> None:
         description="Parse resumes into the candidates table."
     )
     ap.add_argument(
-        "paths", nargs="*", help="Files or directories. Default: data/raw/"
+        "paths", nargs="*", help="Files or directories. Default: data/cvs/"
     )
     ap.add_argument(
         "--dry-run", action="store_true", help="Print results, don't write to DB."
@@ -131,7 +131,7 @@ def main() -> None:
     args = ap.parse_args()
 
     configure_logging(level="INFO", json_output=False)
-    paths = [Path(p) for p in args.paths] if args.paths else [settings.paths.data_raw]
+    paths = [Path(p) for p in args.paths] if args.paths else [settings.paths.cvs]
     asyncio.run(_run(paths, dry_run=args.dry_run, force=args.force))
 
 

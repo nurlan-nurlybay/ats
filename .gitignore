@@ -222,16 +222,9 @@ notebooks/
 
 # data
 
-# data/cvs/ — production CVs (git-tracked allowlist)
+# data/cvs/ — all CVs (Gmail-ingested + UI-uploaded), fully gitignored
 data/cvs/*
 !data/cvs/.gitkeep
-!data/cvs/Abdiakhmet_Kozhamkulov.pdf
-!data/cvs/Нурлан_Нурлыбай_Бэкенд.docx
-
-# data/raw/ — Gmail-ingestion target (everything dynamic except markers)
-data/raw/*
-!data/raw/.gitkeep
-!data/raw/seen_hashes.json
 
 # data/processed/ — runtime parsing artifacts
 data/processed/*

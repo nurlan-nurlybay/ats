@@ -1,10 +1,13 @@
-# Single multi-stage image, used by both the `api` and `ui` services
+# Single multi-stage image, used by api / ui / worker / migrate services
 # (they only differ in the `command:` they run).
 #
-# Layer strategy:
-#   1. apt-get build deps               — slow, rarely changes
-#   2. pyproject.toml + source          — fast, changes most often
-#   3. pip install + spaCy models       — moderate, changes when deps change
+# Layer strategy (cache-friendly):
+#   1. apt-get build deps       — slow, almost never changes
+#   2. pyproject.toml + stub src/ + pip install
+#                               — heavy (~3 GB ML stack) but keyed only on
+#                                 pyproject.toml, so src/ edits don't bust it
+#   3. spaCy bilingual models   — moderate, stable
+#   4. real src/                — fast, changes most often
 #
 # bge-m3 (~3.1 GB) is NOT baked in. It downloads on first container start
 # into the `hf_cache` named volume mounted at /root/.cache/huggingface.
@@ -33,18 +36,23 @@ RUN apt-get update && \
 # ─── builder ──────────────────────────────────────────────────────────────
 FROM base AS builder
 
-# Source must be present before `pip install .` because pyproject.toml
-# requires src/ for the package metadata. README.md is required by the
-# `[project].readme` declaration.
+# Layer A: deps install. Keyed on pyproject.toml + README.md only; survives
+# all src/ edits. The setuptools build backend needs *something* importable
+# at `src/ats/` to compute package metadata, so we create a stub
+# __init__.py first. Real source comes in a later layer. Imports resolve
+# via PYTHONPATH=/app/src (set in `base`), so we never need to re-run
+# `pip install .` after the real src/ lands.
 COPY pyproject.toml README.md ./
-COPY src/ ./src/
+RUN mkdir -p src/ats && touch src/ats/__init__.py && \
+    pip install .
 
-RUN pip install .
-
-# spaCy bilingual models — needed by ats.ingestion.parser.ner.
+# Layer B: spaCy bilingual models — needed by ats.ingestion.parser.ner.
 # These are pip-installable wheel packages (~50 MB each) baked into the image.
 RUN python -m spacy download ru_core_news_md && \
     python -m spacy download en_core_web_md
+
+# Layer C: real source code. Cheap layer; src/ edits only invalidate from here.
+COPY src/ ./src/
 
 # ─── runtime ──────────────────────────────────────────────────────────────
 FROM builder AS runtime

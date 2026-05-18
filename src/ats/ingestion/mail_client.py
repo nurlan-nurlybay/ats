@@ -1,8 +1,12 @@
 """IMAP ingestion: pull unseen resume attachments from the mailbox.
 
 Connects with credentials from `settings.imap`, fetches UNSEEN messages,
-saves any `.pdf` / `.docx` attachments to `settings.paths.data_raw`, and
+saves any `.pdf` / `.docx` attachments to `settings.paths.cvs`, and
 marks the source messages as SEEN so they are not processed twice.
+
+Hash self-healing: on init, if the number of CV files on disk does not
+match the number of entries in `seen_hashes.json`, the hash set is wiped
+and recalculated from the files currently on disk.
 """
 from __future__ import annotations
 
@@ -43,18 +47,45 @@ class EmailIngestionService:
     """Fetch new resume attachments from the configured IMAP mailbox."""
 
     def __init__(self, save_dir: Path | None = None) -> None:
-        self.save_dir = save_dir or settings.paths.data_raw
+        self.save_dir = save_dir or settings.paths.cvs
         self.save_dir.mkdir(parents=True, exist_ok=True)
-        
+
         self.hashes_file = self.save_dir / "seen_hashes.json"
+        self._load_or_heal_hashes()
+
+    def _cv_files(self) -> list[Path]:
+        """Return all CV files on disk in the save directory."""
+        return [
+            p for p in self.save_dir.iterdir()
+            if p.is_file() and p.suffix.lower() in ALLOWED_EXTENSIONS
+        ]
+
+    def _load_or_heal_hashes(self) -> None:
+        """Load hashes from disk. Self-heal if count mismatches files on disk."""
+        files = self._cv_files()
+
         if self.hashes_file.exists():
-            self.seen_hashes = set(json.loads(self.hashes_file.read_text(encoding="utf-8")))
-        else:
-            self.seen_hashes = set()
-            for p in self.save_dir.iterdir():
-                if p.is_file() and p.suffix.lower() in ALLOWED_EXTENSIONS:
-                    self.seen_hashes.add(hashlib.sha256(p.read_bytes()).hexdigest())
-            self._save_hashes()
+            try:
+                stored = set(json.loads(self.hashes_file.read_text(encoding="utf-8")))
+            except (json.JSONDecodeError, TypeError):
+                stored = set()
+
+            if len(stored) == len(files):
+                self.seen_hashes = stored
+                return
+            else:
+                log.warning(
+                    "hash_mismatch_healing",
+                    stored_hashes=len(stored),
+                    files_on_disk=len(files),
+                )
+
+        # Rebuild from scratch
+        self.seen_hashes: set[str] = set()
+        for p in files:
+            self.seen_hashes.add(hashlib.sha256(p.read_bytes()).hexdigest())
+        self._save_hashes()
+        log.info("hashes_rebuilt", count=len(self.seen_hashes))
 
     def _save_hashes(self) -> None:
         self.hashes_file.write_text(json.dumps(list(self.seen_hashes)), encoding="utf-8")
@@ -106,7 +137,7 @@ class EmailIngestionService:
 
             filename = f"{msg.uid}_{_safe_filename(att.filename)}"
             path = self.save_dir / filename
-            
+
             payload_hash = hashlib.sha256(att.payload).hexdigest()
             if payload_hash in self.seen_hashes:
                 log.info(
@@ -115,11 +146,11 @@ class EmailIngestionService:
                     reason="duplicate_content",
                 )
                 continue
-                
+
             path.write_bytes(att.payload)
             self.seen_hashes.add(payload_hash)
             self._save_hashes()
-            
+
             log.info("attachment_saved", filename=filename, size_bytes=len(att.payload))
             saved.append(
                 SavedAttachment(

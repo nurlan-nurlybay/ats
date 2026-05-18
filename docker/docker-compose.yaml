@@ -19,6 +19,18 @@ services:
       timeout: 5s
       retries: 10
 
+  redis:
+    image: redis:7-alpine
+    container_name: ats-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   # One-shot — applies Alembic migrations and exits. The api service waits
   # for `condition: service_completed_successfully` so it never starts
   # against a stale schema. Idempotent — safe to re-run on every `up`.
@@ -60,8 +72,12 @@ services:
       # No GPU passthrough in this compose file — force the embedder to CPU.
       # configs/config.yaml stays on `cuda` for the host's RTX 5060 workflow.
       ATS_DEVICE: cpu
+      # Celery broker for triggering on-demand tasks from the API.
+      CELERY_BROKER_URL: redis://redis:6379/0
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
@@ -70,8 +86,8 @@ services:
     volumes:
       # 3.1 GB bge-m3 model — persisted across rebuilds.
       - hf_cache:/root/.cache/huggingface
-      # Read-only project assets used by the matchers / eval scripts.
-      - ../data:/app/data:ro
+      # Read-write: upload endpoint + Gmail ingestion write CVs here.
+      - ../data:/app/data
       - ../configs:/app/configs:ro
     healthcheck:
       # 12 * 10s = 2 min budget — covers first-start bge-m3 download.
@@ -80,6 +96,38 @@ services:
       timeout: 5s
       retries: 12
       start_period: 30s
+
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: ats-worker
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      POSTGRES_HOST: postgres
+      HF_HUB_OFFLINE: "0"
+      HF_HOME: /root/.cache/huggingface
+      ATS_DEVICE: cpu
+      CELERY_BROKER_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - hf_cache:/root/.cache/huggingface
+      - ../data:/app/data
+      - ../configs:/app/configs:ro
+    # Combined worker + beat in one process (suitable for a single-worker setup).
+    command: >
+      celery -A ats.ingestion.tasks worker
+        --beat
+        --loglevel=info
+        --concurrency=1
 
   ui:
     build:

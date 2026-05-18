@@ -1,18 +1,20 @@
-.PHONY: help up down build logs ps shell bootstrap test eval
+.PHONY: help up down build logs ps shell bootstrap test eval pull
 
 COMPOSE := docker compose -f docker/docker-compose.yaml
 
 help:
 	@echo 'Targets:'
-	@echo '  build       Build api/ui/migrate image (slow first time)'
-	@echo '  up          Start postgres + migrate + api + ui (detached)'
+	@echo '  build       Build api/ui/migrate/worker image (slow first time)'
+	@echo '  up          Start postgres + redis + migrate + api + worker + ui (detached)'
 	@echo '  down        Stop all services (volumes retained)'
 	@echo '  down-clean  Stop AND drop volumes (data loss!)'
 	@echo '  ps          Container status'
 	@echo '  logs        Tail logs (all services)'
 	@echo '  logs-api    Tail api logs only'
+	@echo '  logs-worker Tail worker logs only'
 	@echo '  shell       Open a shell in the api container'
 	@echo '  bootstrap   One-time data load: import vacancies, embed, parse CVs'
+	@echo '  pull        Trigger Gmail pull + parse via API'
 	@echo '  seed-hf     Pre-populate ats_hf_cache from ~/.cache/huggingface'
 
 build:
@@ -36,6 +38,9 @@ logs:
 logs-api:
 	$(COMPOSE) logs -f --tail=100 api
 
+logs-worker:
+	$(COMPOSE) logs -f --tail=100 worker
+
 shell:
 	$(COMPOSE) exec api bash
 
@@ -43,6 +48,9 @@ bootstrap:
 	$(COMPOSE) exec api python -m ats.utils.import_vacancies
 	$(COMPOSE) exec -e HF_HUB_OFFLINE=1 api python -m ats.utils.embed_vacancies
 	$(COMPOSE) exec -e HF_HUB_OFFLINE=1 api python -m ats.ingestion.parser data/cvs/
+
+pull:
+	curl -X POST http://localhost:8000/ingestion/pull
 
 seed-hf:
 	docker volume create ats_hf_cache

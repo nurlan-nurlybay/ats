@@ -46,7 +46,10 @@ dependencies = [
 
     # Utilities
     "structlog",       # Structured JSON logging (bank-level standard)
-    "pyyaml"           # For reading configs/prompts.yaml
+    "pyyaml",          # For reading configs/prompts.yaml
+
+    # Background tasks
+    "celery[redis]",   # Periodic Gmail polling + on-demand ingestion
 ]
 
 [project.optional-dependencies]

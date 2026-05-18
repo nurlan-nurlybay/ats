@@ -486,16 +486,40 @@ tests/        # pytest unit-тесты
 
 ### Пример 1. Матчинг через API
 
+![alt text](image-10.png)
+![alt text](image-11.png)
+![alt text](image-12.png)
+
 <!-- TODO: пример curl-запроса и ответа -->
 
 ### Пример 2. Streamlit UI
 
-<!-- TODO: скриншоты главной страницы, All Vacancies, Manage -->
+![alt text](image.png)
+![alt text](image-1.png)
+![alt text](image-2.png)
+![alt text](image-3.png)
+![alt text](image-4.png)
+![alt text](image-5.png)
+![alt text](image-6.png)
+![alt text](image-7.png)
+![alt text](image-8.png)
+![alt text](image-9.png)
 
 ### Пример 3. CLI
 
-<!-- TODO: пример python -m ats.matching --job 7 --strategy llm -->
+```bash
+nurlan@legion:~/projects/ats$ docker compose -f docker/docker-compose.yaml exec \
+    -e HF_HUB_OFFLINE=1 api \
+    python -m ats.matching --job 7 --strategy semantic --top-k 5
+2026-05-18T09:19:39.985937Z [info     ] match_by_vacancy               [ats.matching.semantic] job_id=7 title='Middle ML Engineer' top_k=5
+2026-05-18T09:19:39.989110Z [info     ] match_done                     [ats.matching.semantic] results=5 top_score=0.6483171405414175
 
-### Пример 4. LLM-объяснение
+Vacancy 7: Middle ML Engineer
+  1. (0.648) Ербол Жумабаев <e.zhumabayev.ml@email.com>  1564_Ербол_Жумабаев.pdf
+  2. (0.573) Elena Kim <e.kim.qa@email.com>  1571_Elena_Kim.pdf
+  3. (0.565) Нурлан Нурлыбай <n.nurlibay32@gmail.com>  Нурлан_Нурлыбай_Бэкенд.docx
+  4. (0.562) Nurlan Nurlybay <n.nurlibay32@gmail.com>  Nurlan_Nurlybay_ML.pdf
+  5. (0.532) Контакты <a.smirnov.dev@email.com>  1567_Артем_Смирнов.pdf
+nurlan@legion:~/projects/ats$ 
+```
 
-<!-- TODO: пример JSON-ответа с explanation для русской и английской вакансии -->

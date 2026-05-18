@@ -154,6 +154,57 @@ def _candidates_tab() -> None:
                     st.error(str(e))
 
     st.divider()
+    st.subheader("📥 Pull CVs from Gmail")
+    st.caption(
+        "CVs are pulled automatically every 5 minutes. "
+        "Click below to trigger an immediate pull."
+    )
+    if st.button("📥 Pull CVs from Gmail", type="secondary"):
+        try:
+            resp = api.trigger_pull()
+            task_id = resp.get("task_id")
+            if not task_id:
+                st.error("No task ID returned.")
+            else:
+                with st.spinner(
+                    "Pulling from Gmail and parsing — this may take a minute…"
+                ):
+                    import time
+
+                    for _ in range(60):  # poll for up to 2 minutes
+                        time.sleep(2)
+                        status_resp = api.poll_pull_status(task_id)
+                        if status_resp.get("status") in ("SUCCESS", "FAILURE"):
+                            break
+                    else:
+                        st.warning("Task is still running. Check back shortly.")
+                        return
+
+                    if status_resp.get("status") == "SUCCESS":
+                        result = status_resp.get("result", {})
+                        pulled = result.get("pulled", 0)
+                        parsed = result.get("parsed", 0)
+                        errors = result.get("errors", [])
+                        if pulled == 0:
+                            st.info("No new emails found.")
+                        else:
+                            st.success(
+                                f"Pulled {pulled} file(s), parsed {parsed} "
+                                f"new candidate(s)."
+                            )
+                        if errors:
+                            for err in errors:
+                                st.warning(f"⚠️ {err}")
+                        if parsed > 0:
+                            _refresh()
+                    else:
+                        st.error(
+                            f"Task failed: {status_resp.get('error', 'unknown')}"
+                        )
+        except ApiError as e:
+            st.error(str(e))
+
+    st.divider()
     st.subheader("Existing candidates")
     try:
         candidates = api.list_candidates(include_eval=False)
