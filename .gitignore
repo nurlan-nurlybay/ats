@@ -217,6 +217,9 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
+# Claude Code workspace state — already pushed once by accident, untracked going forward
+.claude/
+
 CLAUDE.md
 notebooks/
 

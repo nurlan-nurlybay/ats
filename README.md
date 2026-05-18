@@ -26,13 +26,13 @@ ATS-система с двуязычной (RU/EN) обработкой резю
 ┌─────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
 │  Gmail  │ ──► │   Парсер     │ ──► │  Postgres +  │ ──► │   Matching   │
 │  IMAP   │     │  (no-LLM)    │     │   pgvector   │     │   Strategy   │
-└─────────┘     └──────────────┘     └──────────────┘     └──────┬───────┘
-                                                                 │
-                                          ┌──────────────────────┴─────┐
-                                          ▼                            ▼
-                                    ┌───────────┐               ┌─────────────┐
-                                    │  FastAPI  │ ◄──────────►  │  Streamlit  │
-                                    └───────────┘               └─────────────┘
+└────▲────┘     └──────────────┘     └──────────────┘     └──────┬───────┘
+     │                                                           │
+┌────┴─────┐                                ┌──────────────────────┴─────┐
+│  Celery  │                                ▼                            ▼
+│  Beat 5m │                          ┌───────────┐               ┌─────────────┐
+└──────────┘                          │  FastAPI  │ ◄──────────►  │  Streamlit  │
+                                      └───────────┘               └─────────────┘
 ```
 
 **Принципы:**
@@ -48,6 +48,9 @@ ATS-система с двуязычной (RU/EN) обработкой резю
 * **Двуязычность из коробки** — `BAAI/bge-m3` нативно понимает RU и EN; spaCy
   `ru_core_news_md` + `en_core_web_md` склеиваются по перекрытию спанов; LLM-объяснения
   отдаются на языке вакансии.
+* **Автоматическая ингестия** — Celery Beat-воркер опрашивает Gmail каждые 5 минут и
+  парсит новые CV в БД без участия оператора. Тот же таск дёргается on-demand из UI
+  через `POST /ingestion/pull`.
 
 ---
 
@@ -64,7 +67,8 @@ ATS-система с двуязычной (RU/EN) обработкой резю
 | Извлечение текста | pdfplumber, python-docx | PDF/DOCX → строки с типографикой |
 | Бэкенд | FastAPI + asyncpg + SQLAlchemy 2.0 | Полностью асинхронный, OpenAPI из коробки |
 | Фронтенд | Streamlit | Мульти-страничное приложение, минимальный фронт-код |
-| Контейнеризация | Docker Compose | Postgres + migrate + api + ui единым стеком |
+| Очередь задач | Celery 5 + Beat (брокер Redis 7) | Периодический Gmail-полл каждые 5 мин + on-demand ингестия |
+| Контейнеризация | Docker Compose | postgres + redis + migrate + api + worker + ui единым стеком |
 | Логирование | structlog (JSON в prod, console локально) | Контекст-aware логи, request-id для трассировки |
 
 ---
@@ -74,11 +78,19 @@ ATS-система с двуязычной (RU/EN) обработкой резю
 ### Stage 1 — Ингестия писем
 
 `src/ats/ingestion/mail_client.py` — IMAP-клиент через `imap_tools`. Подключается к
-Gmail, забирает все UNSEEN-сообщения, сохраняет PDF/DOCX-вложения в `data/raw/` с
-именами `{uid}_{sanitized_name}.{ext}`. Sanitizer регулярки сохраняет кириллицу.
-Дубликаты отсеиваются по SHA-256 (`data/raw/seen_hashes.json`). После успешного
+Gmail, забирает все UNSEEN-сообщения, сохраняет PDF/DOCX-вложения в `data/cvs/` с
+именами `{uid}_{sanitized_name}.{ext}` — в ту же директорию, куда складываются и CV,
+загруженные через UI. Sanitizer регулярки сохраняет кириллицу.
+Дубликаты отсеиваются по SHA-256 (`data/cvs/seen_hashes.json`). После успешного
 сохранения письма помечаются прочитанными. Ошибки внутри одного письма не валят весь
 батч — фиксируются в логах и пропускаются.
+
+**Self-heal хэшей при старте** — `EmailIngestionService.__init__` сравнивает
+количество `.pdf`/`.docx` файлов в `data/cvs/` с длиной массива в `seen_hashes.json`.
+При несовпадении массив очищается и пересчитывается с нуля. Это страхует от ситуации,
+когда CV удалили вручную (или наоборот, добавили в обход IMAP), а `seen_hashes.json`
+остался прежним. Хук `@app.on_after_configure.connect` в `tasks.py` инстанцирует
+сервис при старте worker-контейнера — heal происходит до первого beat-тика.
 
 ### Stage 1.5 — Postgres + pgvector
 
@@ -157,6 +169,25 @@ post-hoc при импорте/парсинге. `parsed_json` хранит ве
   re-embedding при изменении title/description. POST /candidates принимает
   multipart-загрузку (≤15 MB, .pdf/.docx), парсит inline, складывает файл в `data/cvs/`.
 * **RRF Fusion** — новая стратегия `rrf` фьюжит semantic + tfidf по рангу (см. ниже).
+
+### Stage 6 — Автоматическая ингестия + унификация хранилища CV
+
+* **Celery Beat-воркер** (`src/ats/ingestion/tasks.py`) — отдельный контейнер,
+  запускает `pull_and_parse_cvs` каждые 300 секунд. Таск дёргает `EmailIngestionService`,
+  парсит каждое новое вложение через `parse_resume()` и апсёртит в `candidates`.
+  Брокер — Redis 7 (alpine, ~7 MB). Воркер запущен в режиме `worker --beat
+  --concurrency=1`: один процесс совмещает scheduler и executor — оптимально для
+  одной задачи с низкой частотой.
+* **On-demand триггер** (`POST /ingestion/pull`) — тот же таск, дёргаемый
+  пользователем из UI ("📥 Pull CVs from Gmail" на странице Manage) или через curl.
+  Возвращает 202 + `task_id`; статус и результат тянутся через
+  `GET /ingestion/pull/{task_id}`. Полезно когда recruiter получил CV в Gmail и не
+  хочет ждать следующий beat-тик.
+* **Единая директория `data/cvs/`** — Gmail-ингестия и UI-загрузка теперь пишут в
+  одно место. Старая `data/raw/` удалена. `data/cvs/*` целиком gitignored
+  (только `.gitkeep` отслеживается) — реальные CV больше не утекают в репозиторий.
+* **Self-heal `seen_hashes.json`** — см. Stage 1. Срабатывает eagerly на старте
+  worker'а через celery-сигнал `on_after_configure`.
 
 ---
 
@@ -307,10 +338,10 @@ cp .env.example .env  # отредактировать
 # 2. Поднять стек
 cd docker
 docker compose build           # ~5 минут первый раз (torch, sklearn, spacy)
-docker compose up -d           # postgres + migrate + api + ui
+docker compose up -d           # postgres + redis + migrate + api + worker + ui
 
 # 3. Дождаться готовности (~30 с при прогретом hf_cache, иначе модель тянется ~10 мин)
-docker compose ps              # все 4 сервиса healthy
+docker compose ps              # 5 сервисов healthy + migrate exited(0)
 
 # 4. Bootstrap данных — одноразово, идемпотентно
 docker compose exec api python -m ats.utils.import_vacancies                 # 8 prod-вакансий
@@ -366,6 +397,8 @@ PYTHONPATH=src streamlit run src/ats/ui/app.py             # UI на :8501
 | `GET` | `/candidates/{id}` | Полный кандидат с `parsed_json` + 3000-char excerpt |
 | `POST` | `/candidates` | Multipart-загрузка PDF/DOCX, парсинг inline |
 | `DELETE` | `/candidates/{id}` | `?keep_file=true` чтобы оставить файл на диске |
+| `POST` | `/ingestion/pull` | Триггер Gmail-pull + парсинг через Celery; 202 + `task_id` |
+| `GET` | `/ingestion/pull/{task_id}` | Статус и результат запущенного pull-таска |
 | `GET` | `/recommendations` | **Главный endpoint** — см. ниже |
 | `GET` | `/docs` | OpenAPI Swagger UI |
 
@@ -435,7 +468,8 @@ src/ats/
   core/         # config, logger, prompts loader
   db/           # SQLAlchemy модели + async engine/session
   ingestion/
-    mail_client.py        # Gmail IMAP
+    mail_client.py        # Gmail IMAP + self-heal seen_hashes.json
+    tasks.py              # Celery app + Beat schedule (5m) + pull_and_parse_cvs
     parser/               # extract → segment → ner → skills → embed → pipeline
   matching/
     base.py     # MatchingStrategy ABC + CandidateMatch + RESUME_CSV_PREFIX
@@ -446,11 +480,11 @@ src/ats/
     cli.py      # python -m ats.matching
   api/
     app.py              # FastAPI factory + lifespan + middleware
-    routers/            # health, vacancies, candidates, recommendations
+    routers/            # health, vacancies, candidates, recommendations, ingestion
   ui/
     app.py              # главная страница
     api_client.py       # sync requests-обёртка
-    pages/              # 2_📋_All_Vacancies, 3_⚙️_Manage
+    pages/              # 2_📋_All_Vacancies, 3_⚙️_Manage (📥 Pull CVs button)
   utils/
     import_vacancies.py
     embed_vacancies.py
@@ -465,8 +499,8 @@ configs/
   prompts.yaml  # двуязычные LLM-промпты
 
 data/
-  cvs/                # production CVs (git-tracked)
-  raw/                # Gmail-target (git-ignored)
+  cvs/                # unified: Gmail-ingested + UI-uploaded (git-ignored, кроме .gitkeep)
+                      # содержит seen_hashes.json для IMAP-дедупликации
   vacancies/          # production вакансии (8 шт, git-tracked)
   eval/
     Resume.csv        # 2,484 размеченных резюме (git-ignored, 60 MB)
@@ -474,7 +508,7 @@ data/
   gazetteers/         # orgs.txt, unis.txt — справочники для NER
 
 migrations/   # Alembic миграции
-docker/       # Dockerfile + docker-compose.yaml + .dockerignore
+docker/       # Dockerfile (+ Dockerfile.patch) + docker-compose.yaml + .dockerignore
 tests/        # pytest unit-тесты
 ```
 
@@ -486,33 +520,32 @@ tests/        # pytest unit-тесты
 
 ### Пример 1. Матчинг через API
 
-![alt text](image-10.png)
-![alt text](image-11.png)
-![alt text](image-12.png)
+![alt text](docs/screenshots/image-10.png)
+![alt text](docs/screenshots/image-11.png)
+![alt text](docs/screenshots/image-12.png)
 
 <!-- TODO: пример curl-запроса и ответа -->
 
 ### Пример 2. Streamlit UI
 
-![alt text](image.png)
-![alt text](image-1.png)
-![alt text](image-2.png)
-![alt text](image-3.png)
-![alt text](image-4.png)
-![alt text](image-5.png)
-![alt text](image-6.png)
-![alt text](image-7.png)
-![alt text](image-8.png)
-![alt text](image-9.png)
+![alt text](docs/screenshots/image.png)
+![alt text](docs/screenshots/image-1.png)
+![alt text](docs/screenshots/image-2.png)
+![alt text](docs/screenshots/image-3.png)
+![alt text](docs/screenshots/image-4.png)
+![alt text](docs/screenshots/image-5.png)
+![alt text](docs/screenshots/image-6.png)
+![alt text](docs/screenshots/image-7.png)
+![alt text](docs/screenshots/image-8.png)
+![alt text](docs/screenshots/image-9.png)
 
 ### Пример 3. CLI
 
 ```bash
-nurlan@legion:~/projects/ats$ docker compose -f docker/docker-compose.yaml exec \
-    -e HF_HUB_OFFLINE=1 api \
-    python -m ats.matching --job 7 --strategy semantic --top-k 5
-2026-05-18T09:19:39.985937Z [info     ] match_by_vacancy               [ats.matching.semantic] job_id=7 title='Middle ML Engineer' top_k=5
-2026-05-18T09:19:39.989110Z [info     ] match_done                     [ats.matching.semantic] results=5 top_score=0.6483171405414175
+nurlan@legion:~/projects/ats$ HF_HUB_OFFLINE=1 PYTHONPATH=src .venv/bin/python -m ats.matching --job 7 --strategy semantic --top-k 5
+# (same pattern for tfidf / rrf)
+2026-05-18T09:24:02.896008Z [info     ] match_by_vacancy               [ats.matching.semantic] job_id=7 title='Middle ML Engineer' top_k=5
+2026-05-18T09:24:02.899653Z [info     ] match_done                     [ats.matching.semantic] results=5 top_score=0.6483171405414175
 
 Vacancy 7: Middle ML Engineer
   1. (0.648) Ербол Жумабаев <e.zhumabayev.ml@email.com>  1564_Ербол_Жумабаев.pdf
