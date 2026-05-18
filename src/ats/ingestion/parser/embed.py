@@ -6,6 +6,7 @@ document embedder and KeyBERT's keyphrase extractor — avoids loading the
 """
 from __future__ import annotations
 
+import os
 from threading import Lock
 
 from sentence_transformers import SentenceTransformer
@@ -28,8 +29,11 @@ def get_embedder() -> SentenceTransformer:
         if _model is not None:
             return _model
         cfg = settings.models.semantic
-        device = None if cfg.device == "auto" else cfg.device
-        log.info("bge_m3_load", name=cfg.name, device=cfg.device)
+        # ATS_DEVICE env-var wins over YAML so Docker can force CPU without
+        # editing configs/config.yaml (which the host still wants on CUDA).
+        device_setting = os.environ.get("ATS_DEVICE") or cfg.device
+        device = None if device_setting == "auto" else device_setting
+        log.info("bge_m3_load", name=cfg.name, device=device_setting)
         m = SentenceTransformer(cfg.name, device=device)
         m.max_seq_length = cfg.max_seq_length
         _model = m

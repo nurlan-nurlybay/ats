@@ -19,6 +19,91 @@ services:
       timeout: 5s
       retries: 10
 
+  # One-shot — applies Alembic migrations and exits. The api service waits
+  # for `condition: service_completed_successfully` so it never starts
+  # against a stale schema. Idempotent — safe to re-run on every `up`.
+  migrate:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: ats-migrate
+    env_file:
+      - ../.env
+    environment:
+      POSTGRES_HOST: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      # alembic env.py imports ats.core.config.settings, which loads config.yaml
+      - ../configs:/app/configs:ro
+    command: alembic upgrade head
+    restart: "no"
+
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: ats-api
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      # Override .env's `localhost` so the API talks to the postgres service
+      # over the docker-compose network instead of trying its own loopback.
+      POSTGRES_HOST: postgres
+      # First start downloads bge-m3 (~3.1 GB) into the hf_cache volume.
+      # Subsequent starts use the cached model. Flip to "1" once cached
+      # to skip the slow HEAD-check on every cold start.
+      HF_HUB_OFFLINE: "0"
+      HF_HOME: /root/.cache/huggingface
+      # No GPU passthrough in this compose file — force the embedder to CPU.
+      # configs/config.yaml stays on `cuda` for the host's RTX 5060 workflow.
+      ATS_DEVICE: cpu
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    ports:
+      - "8000:8000"
+    volumes:
+      # 3.1 GB bge-m3 model — persisted across rebuilds.
+      - hf_cache:/root/.cache/huggingface
+      # Read-only project assets used by the matchers / eval scripts.
+      - ../data:/app/data:ro
+      - ../configs:/app/configs:ro
+    healthcheck:
+      # 12 * 10s = 2 min budget — covers first-start bge-m3 download.
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  ui:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: ats-ui
+    restart: unless-stopped
+    environment:
+      # Talk to the api service over the compose network DNS.
+      ATS_API_URL: http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "8501:8501"
+    command: >
+      streamlit run src/ats/ui/app.py
+        --server.address 0.0.0.0
+        --server.port 8501
+        --server.headless true
+        --browser.gatherUsageStats false
+
 volumes:
   pgdata:
     name: ats_pgdata
+  hf_cache:
+    name: ats_hf_cache

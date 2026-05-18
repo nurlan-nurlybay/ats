@@ -211,23 +211,88 @@ def find_name(top_lines: list[Line]) -> str | None:  # noqa: F821 (forward ref)
 
 
 # --- Date extraction ---
+#
+# Three patterns, applied in priority order. Spans matched by earlier
+# patterns are excluded from later ones to avoid double-counting (a
+# `Jun 2025 - Dec 2024` shouldn't ALSO produce two single-date hits).
 
+# English + Russian month names. Russian uses nominative + common inflected
+# forms (Январь, Январе, Января, etc.) since CVs vary.
+_MONTHS = (
+    r"jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?"
+    r"|январ[ьяе]|феврал[ьяе]|март[а]?|апрел[ьяе]|ма[яй]|июн[ьяе]|июл[ьяе]"
+    r"|август[а]?|сентябр[ьяе]|октябр[ьяе]|ноябр[ьяе]|декабр[ьяе]"
+)
+
+# "Present" markers — English + Russian variants.
+_PRESENT = (
+    r"present|now|current(?:\s+time)?|currently|"
+    r"настоящее\s+время|по\s+наст\.?|по\s+настоящее"
+)
+
+# Date atom: any of `YYYY`, `MM/YYYY`, `MM-YYYY`, `Month YYYY`.
+_DATE_ATOM = (
+    r"(?:(?:0?[1-9]|1[0-2])[/.\-](?:19|20)\d{2}"
+    r"|(?:" + _MONTHS + r")\s+(?:19|20)\d{2}"
+    r"|(?:19|20)\d{2})"
+)
+
+# 1. Plain numeric-year range — kept for backward compat.
 _DATE_RANGE_RE = re.compile(
     r"\b(?P<start>(?:19|20)\d{2})\s*[—–\-]\s*"
-    r"(?P<end>(?:19|20)\d{2}|present|now|настоящее время|по\s*наст\.?|по\s*настоящее)",
+    r"(?P<end>(?:19|20)\d{2}|" + _PRESENT + r")",
     re.IGNORECASE,
 )
 
+# 2. Month-year or numeric-month-year range, both sides, with either side
+#    possibly being a "present" marker.
+_MONTH_YEAR_RANGE_RE = re.compile(
+    r"(?P<start>" + _DATE_ATOM + r")"
+    r"\s*[—–\-→]\s*"
+    r"(?P<end>" + _DATE_ATOM + r"|" + _PRESENT + r")",
+    re.IGNORECASE,
+)
 
-def extract_date_ranges(text: str) -> list[tuple[str, str]]:
-    """Return list of (start_year, end_year_or_'present') tuples."""
-    ranges: list[tuple[str, str]] = []
-    for m in _DATE_RANGE_RE.finditer(text):
-        start = m.group("start")
-        end_raw = m.group("end").lower()
-        end_match = re.match(r"(19|20)\d{2}", end_raw)
-        end = end_match.group(0) if end_match else "present"
-        ranges.append((start, end))
+# 3. Standalone date — graduation year / single mention. Catches single
+#    `YYYY`, `Month YYYY`, or `MM/YYYY` that aren't part of a matched range.
+_SINGLE_DATE_RE = re.compile(_DATE_ATOM, re.IGNORECASE)
+
+
+def _normalize_end(raw: str) -> str:
+    """Collapse present markers to the literal `present`; leave dates as-is."""
+    low = raw.lower().strip()
+    if re.match(_PRESENT, low, re.IGNORECASE):
+        return "present"
+    return raw.strip()
+
+
+def extract_date_ranges(text: str) -> list[tuple[str | None, str | None]]:
+    """Return list of (start, end) date-string tuples in order of appearance.
+
+    `start` may be None for single dates (e.g., a graduation year), in which
+    case the date sits in `end`. `end` is either a date string or the
+    literal `"present"`.
+
+    Two-sided ranges are matched first (numeric, then month-year); their
+    spans are recorded so single-date scanning doesn't double-count tokens
+    already consumed by a range.
+    """
+    ranges: list[tuple[str | None, str | None]] = []
+    consumed: list[tuple[int, int]] = []
+
+    # The broader month-year regex subsumes _DATE_RANGE_RE (bare YYYY is a
+    # valid _DATE_ATOM). Iterating both would double-count.
+    for m in _MONTH_YEAR_RANGE_RE.finditer(text):
+        ranges.append((m.group("start").strip(), _normalize_end(m.group("end"))))
+        consumed.append(m.span())
+
+    for m in _SINGLE_DATE_RE.finditer(text):
+        # Skip dates already consumed by a range.
+        if any(s <= m.start() < e for s, e in consumed):
+            continue
+        ranges.append((None, m.group(0).strip()))
+
     return ranges
 
 

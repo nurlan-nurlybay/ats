@@ -33,6 +33,7 @@ dependencies = [
     # Backend & Serving
     "fastapi",         # REST API
     "uvicorn",         # ASGI server for FastAPI
+    "python-multipart", # FastAPI's UploadFile (PDF/DOCX uploads via /candidates)
     "pydantic",        # Data validation and structured outputs
     "pydantic-settings", # Parsing .env files natively
     "streamlit",       # Frontend UI

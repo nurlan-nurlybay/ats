@@ -218,11 +218,24 @@ __marimo__/
 .streamlit/secrets.toml
 
 CLAUDE.md
+notebooks/
 
 # data
-data/processed/*
-!data/processed/.gitkeep
+
+# data/cvs/ — production CVs (git-tracked allowlist)
+data/cvs/*
+!data/cvs/.gitkeep
+!data/cvs/Abdiakhmet_Kozhamkulov.pdf
+!data/cvs/Нурлан_Нурлыбай_Бэкенд.docx
+
+# data/raw/ — Gmail-ingestion target (everything dynamic except markers)
 data/raw/*
 !data/raw/.gitkeep
-data/test_cvs/*
-!data/test_cvs/.gitkeep
+!data/raw/seen_hashes.json
+
+# data/processed/ — runtime parsing artifacts
+data/processed/*
+!data/processed/.gitkeep
+
+# data/eval/ — dev-only data; Resume.csv is 60 MB and reproducible from Kaggle
+data/eval/Resume.csv

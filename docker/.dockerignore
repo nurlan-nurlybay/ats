@@ -1,0 +1,41 @@
+# Build context hygiene — keep `docker build` fast and the image lean.
+
+# Python bytecode / venv / packaging artifacts
+__pycache__
+*.py[codz]
+.venv
+.eggs
+*.egg-info
+build
+dist
+
+# Tooling caches
+.git
+.github
+.gitignore
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.claude
+.cursor
+.vscode
+.idea
+.ipynb_checkpoints
+
+# Local dev / docs / reports
+notebooks
+reports
+*.ipynb
+study.ipynb
+
+# Bind-mounted at runtime — no need in the image
+data
+configs
+
+# Heavy assets that should not be baked in
+*.pdf
+*.docx
+
+# OS junk
+.DS_Store
+Thumbs.db

@@ -25,6 +25,7 @@ from ats.ingestion.parser.schema import (
     ParsedResume,
 )
 from ats.ingestion.parser.segment import Section, segment
+from ats.ingestion.parser.skills_section import parse_skills_section
 
 log = get_logger(__name__)
 
@@ -57,53 +58,235 @@ def _extract_phone(text: str) -> str | None:
     return None
 
 
+_BULLET_LEADING_RE = re.compile(r"^\s*[•∙·●▪▶▸‣\-*+]\s*")
+
+
+def _strip_date_substrings(text: str) -> str:
+    """Remove date-range and single-date matches from a line of text.
+
+    Used to recover the role/title from a line like
+        "Middle ML/AI Engineer Jun 2025 - Current Time"
+    →   "Middle ML/AI Engineer"
+    """
+    from ats.ingestion.parser.ner import _MONTH_YEAR_RANGE_RE, _SINGLE_DATE_RE
+    out = text
+    for re_ in (_MONTH_YEAR_RANGE_RE, _SINGLE_DATE_RE):
+        out = re_.sub("", out)
+    # Collapse leftover whitespace/dashes that surrounded the dates.
+    out = re.sub(r"\s*[—–\-→]\s*", " ", out)
+    out = re.sub(r"\s+", " ", out).strip(" \t-—–:,.")
+    return out
+
+
+_GENERIC_ORG_TOKENS = {  # too-short or too-common to trust as a company name
+    "ai", "api", "ml", "dl", "ui", "ux", "qa", "ux/ui", "ml/ai",
+    "rest", "sql", "nlp", "css", "html", "js",
+    "crud", "etl", "rag", "llm", "cv", "nlp",
+}
+
+
+def _looks_like_org_token(s: str) -> bool:
+    """Heuristic: short single-token name-like residue (e.g., `Ryte.AI`, `VBox`)
+    that's NOT a generic acronym — likely an org name on the anchor line.
+
+    Stricter than just "short and capitalized" because Russian role titles
+    (`Backend Инженер`) also fit that loose shape. We require ONE of:
+      - a single token (no whitespace)
+      - presence of `.` (typical of brand names like Ryte.AI, X.AI)
+    """
+    s = s.strip()
+    if not s or len(s) > 20:
+        return False
+    if s.lower() in _GENERIC_ORG_TOKENS:
+        return False
+    if not s[0].isupper():
+        return False
+    tokens = s.split()
+    if len(tokens) == 1:
+        return True
+    if len(tokens) <= 2 and "." in s:
+        return True
+    return False
+
+
+def _find_org_in_line(text: str, orgs: list[str]) -> str | None:
+    """Return the first ORG entity whose text appears (case-insensitive) in line.
+
+    Filters out short generic acronyms (AI, API, ML, …) that spuriously
+    register as ORG entities — they appear too often inside role / skill
+    text to be useful as company names.
+    """
+    low = text.lower()
+    for o in orgs:
+        ol = o.strip().lower()
+        if len(ol) <= 3 or ol in _GENERIC_ORG_TOKENS:
+            continue
+        # Token-boundary match (so "AI" doesn't match inside "ML/AI Engineer").
+        if re.search(r"\b" + re.escape(ol) + r"\b", low):
+            return o
+    return None
+
+
 def _build_experience_entries(
     section_lines: list[Line], entities: list[Entity]
 ) -> list[ExperienceEntry]:
+    """Split the EXPERIENCE section into one entry per date-anchored block.
+
+    Each block starts at a line containing a date range and extends to the
+    next such line (or end of section). Bullets and continuation lines are
+    appended to the block's `raw` field. The role is recovered by stripping
+    the date substring from the anchor line. The org comes from any ORG NER
+    span in the anchor line OR a "pending" ORG seen on a header line just
+    before the anchor.
+    """
     if not section_lines:
         return []
-    text = "\n".join(line.text for line in section_lines)
-    date_ranges = extract_date_ranges(text)
-    orgs = [e for e in entities if e.label == "ORG"]
-
-    if not date_ranges:
-        if not text.strip():
-            return []
-        return [ExperienceEntry(raw=text[:1000])]
+    orgs = [e.text for e in entities if e.label == "ORG"]
 
     entries: list[ExperienceEntry] = []
-    for i, (start, end) in enumerate(date_ranges):
-        org = orgs[i].text if i < len(orgs) else None
-        entries.append(
-            ExperienceEntry(
-                organization=org, role=None, start=start, end=end, raw=text[:1000]
-            )
-        )
+    current: dict | None = None
+    # `pending_org` is the most-recently-seen company header on its own
+    # line. It is STICKY: it persists across entries (a CV may list two
+    # roles at the same company) and is only overwritten when a new
+    # header line shows up.
+    pending_org: str | None = None
+
+    def _looks_like_generic_role_residue(s: str | None) -> bool:
+        """`AI`, `API`, etc. — too short / generic to be a real role."""
+        if not s:
+            return True
+        s_low = s.strip().lower()
+        return len(s_low) <= 3 or s_low in _GENERIC_ORG_TOKENS
+
+    for line in section_lines:
+        text = line.text.strip()
+        if not text:
+            continue
+        ranges = extract_date_ranges(text)
+        if ranges:
+            # Close out the previous entry, start a new one.
+            if current is not None:
+                entries.append(ExperienceEntry(**_finalize_exp(current)))
+            start, end = ranges[0]
+            role = _strip_date_substrings(text) or None
+            line_org_hit = _find_org_in_line(text, orgs)
+            # Heuristic: a date-stripped residue that's short and "name-like"
+            # (≤ 2 tokens, ≤ 20 chars, looks like a proper noun) is more
+            # likely an org-on-the-anchor-line than a role. This catches
+            # `Ryte.AI Oct 2023 - Dec 2024`-style entries where the bilingual
+            # NER fails to cleanly isolate the org.
+            if role and _looks_like_org_token(role):
+                org = role
+                role = None
+                pending_org = org  # carries forward if subsequent roles share it
+            elif role and line_org_hit and role.lower() == line_org_hit.lower():
+                org = line_org_hit
+                role = None
+                pending_org = line_org_hit
+            else:
+                # Default: header-line org wins; line-content NER is fallback.
+                org = pending_org or line_org_hit
+                if role and org and org.lower() in role.lower():
+                    role = re.sub(re.escape(org), "", role, flags=re.IGNORECASE).strip(" \t-—–:,.") or None
+            role_is_residue = _looks_like_generic_role_residue(role)
+            current = {
+                "organization": org,
+                "role": None if role_is_residue else role,
+                "start": start,
+                "end": end,
+                "lines": [text],
+                "role_pending": role_is_residue,
+            }
+            # pending_org is sticky; subsequent entries at the same company
+            # (e.g., VBox listing two roles) reuse it.
+        else:
+            stripped = _BULLET_LEADING_RE.sub("", text).strip()
+            is_bullet = text != stripped
+            if current is not None:
+                current["lines"].append(text)
+                # If we still need a role and this is a short non-bullet line,
+                # claim it as the role (e.g., "Junior Data Analyst" right under
+                # "Ryte.AI Oct 2023 - Dec 2024").
+                if (
+                    current.get("role_pending")
+                    and not is_bullet
+                    and 1 <= len(stripped.split()) <= 6
+                ):
+                    current["role"] = stripped
+                    current["role_pending"] = False
+            else:
+                # Pre-entry header line — keep as candidate org.
+                if not is_bullet and len(stripped.split()) <= 4:
+                    pending_org = stripped
+
+    if current is not None:
+        entries.append(ExperienceEntry(**_finalize_exp(current)))
     return entries
+
+
+def _finalize_exp(d: dict) -> dict:
+    raw = "\n".join(d.pop("lines"))[:600]
+    d.pop("role_pending", None)
+    return {**d, "raw": raw}
 
 
 def _build_education_entries(
     section_lines: list[Line], entities: list[Entity]
 ) -> list[EducationEntry]:
+    """Same heuristic as experience, but: institution instead of org, and
+    education blocks are usually a single line (`University, BSc, 2022`)."""
     if not section_lines:
         return []
-    text = "\n".join(line.text for line in section_lines)
-    date_ranges = extract_date_ranges(text)
-    orgs = [e for e in entities if e.label == "ORG"]
-
-    if not date_ranges:
-        if not text.strip():
-            return []
-        inst = orgs[0].text if orgs else None
-        return [EducationEntry(institution=inst, raw=text[:1000])]
+    orgs = [e.text for e in entities if e.label == "ORG"]
 
     entries: list[EducationEntry] = []
-    for i, (start, end) in enumerate(date_ranges):
-        inst = orgs[i].text if i < len(orgs) else None
-        entries.append(
-            EducationEntry(institution=inst, start=start, end=end, raw=text[:1000])
-        )
+    current: dict | None = None
+    pending_inst: str | None = None
+
+    for line in section_lines:
+        text = line.text.strip()
+        if not text:
+            continue
+        ranges = extract_date_ranges(text)
+        if ranges:
+            if current is not None:
+                entries.append(EducationEntry(**_finalize_edu(current)))
+            start, end = ranges[0]
+            # Degree = the line minus dates minus the institution name.
+            degree = _strip_date_substrings(text)
+            inst = _find_org_in_line(text, orgs) or pending_inst
+            if inst:
+                degree = re.sub(re.escape(inst), "", degree, flags=re.IGNORECASE)
+            degree = re.sub(r"\s+", " ", degree).strip(" \t-—–:,.")
+            current = {
+                "institution": inst,
+                "degree": degree or None,
+                "start": start,
+                "end": end,
+                "lines": [text],
+            }
+            pending_inst = None
+        else:
+            stripped = _BULLET_LEADING_RE.sub("", text).strip()
+            is_bullet = text != stripped
+            if current is None and not is_bullet and len(stripped.split()) <= 6:
+                pending_inst = stripped
+                continue
+            if current is not None:
+                current["lines"].append(text)
+                if current.get("institution") is None:
+                    found = _find_org_in_line(text, orgs)
+                    if found is not None:
+                        current["institution"] = found
+
+    if current is not None:
+        entries.append(EducationEntry(**_finalize_edu(current)))
     return entries
+
+
+def _finalize_edu(d: dict) -> dict:
+    raw = "\n".join(d.pop("lines"))[:600]
+    return {**d, "raw": raw}
 
 
 def parse_resume(path: Path | str) -> ParsedResume:
@@ -149,8 +332,17 @@ def parse_resume(path: Path | str) -> ParsedResume:
             "ner_done", experience=len(experience), education=len(education)
         )
 
-        skills = extract_skills(cleaned_text, exclude_name=name)
-        log.info("skills_done", count=len(skills))
+        # Prefer the deterministic Skills-section parser when the CV has
+        # an explicit structured section. KeyBERT is a fallback for CVs
+        # that don't (or whose section is too sparse to trust).
+        skill_lines = sections.get(Section.SKILLS, [])
+        section_skills = parse_skills_section(skill_lines) if skill_lines else []
+        if len(section_skills) >= 3:
+            skills = section_skills[:30]
+            log.info("skills_done", count=len(skills), source="section")
+        else:
+            skills = extract_skills(cleaned_text, exclude_name=name)
+            log.info("skills_done", count=len(skills), source="keybert_fallback")
 
         embedding = embed_text(cleaned_text)
         log.info("embed_done", dim=len(embedding))

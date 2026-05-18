@@ -1,8 +1,8 @@
 paths:
-  data_raw: data/raw
+  data_raw: data/raw          # Gmail-ingestion target (dynamic, gitignored)
   data_processed: data/processed
-  test_cvs: data/test_cvs
-  vacancies: data/vacancies
+  cvs: data/cvs               # production CVs (git-tracked) + upload endpoint target
+  vacancies: data/vacancies   # 8 production job ads
   index_dir: data/processed/index
 
 models:
@@ -27,6 +27,11 @@ models:
 matching:
   top_k: 5
   default_strategy: semantic
+  llm:
+    shortlist_size: 15      # how many candidates the retriever fetches before LLM rerank
+    max_concurrent: 5       # semaphore cap on in-flight LLM calls (DashScope rate limit guard)
+    timeout_seconds: 30     # per-call HTTP timeout
+    retry_attempts: 3       # exponential backoff retries on 429 / 5xx / timeout
 
 vector_store:
   index_type: pgvector

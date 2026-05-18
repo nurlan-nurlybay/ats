@@ -84,7 +84,7 @@ class LLMSecrets(BaseSettings):
 class PathsConfig(BaseModel):
     data_raw: Path
     data_processed: Path
-    test_cvs: Path
+    cvs: Path
     vacancies: Path
     index_dir: Path
 
@@ -128,9 +128,19 @@ class ModelsConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
 
+class LLMMatchingConfig(BaseModel):
+    shortlist_size: int = 15
+    max_concurrent: int = 5
+    timeout_seconds: float = 30.0
+    retry_attempts: int = 3
+
+    model_config = ConfigDict(frozen=True)
+
+
 class MatchingConfig(BaseModel):
     top_k: int
     default_strategy: Literal["semantic", "tfidf", "llm"]
+    llm: LLMMatchingConfig = LLMMatchingConfig()
 
     model_config = ConfigDict(frozen=True)
 
