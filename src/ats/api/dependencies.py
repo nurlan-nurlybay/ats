@@ -19,7 +19,7 @@ __all__ = ["get_session", "resolve_matcher"]
 def resolve_matcher(
     strategy: str = Query(
         default=settings.matching.default_strategy,
-        description="Matcher name: semantic | tfidf | llm",
+        description="Matcher name: semantic | tfidf | llm | rrf",
     ),
 ) -> MatchingStrategy:
     if strategy not in MATCHERS:

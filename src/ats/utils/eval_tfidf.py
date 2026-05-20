@@ -96,38 +96,70 @@ async def run_evaluation(top_k: int = 10) -> None:
         top_k=top_k,
     )
 
-    # 4. Evaluate each vacancy.
-    metric_rows: list[dict] = []
-    for title, description, source_filename in eval_rows:
-        expected_cat = source_to_category(source_filename)
-        n_relevant = category_counts.get(expected_cat, 0)
+    # 4. Run both evaluation settings.
+    results = {}
+    for run_name, use_boost in [("Standalone TF-IDF", False), ("TF-IDF + LogReg Boost", True)]:
+        metric_rows = []
+        for title, description, source_filename in eval_rows:
+            expected_cat = source_to_category(source_filename)
+            n_relevant = category_counts.get(expected_cat, 0)
 
-        vac_text = f"{title}\n\n{description}"
-        vac_vec = vectorizer.transform([vac_text])
-        sims = cosine_similarity(vac_vec, cand_vecs).ravel()
+            vac_text = f"{title}\n\n{description}"
+            vac_vec = vectorizer.transform([vac_text])
+            sims = cosine_similarity(vac_vec, cand_vecs).ravel()
 
-        if not _is_russian(vac_text):
-            vac_cat = classifier.predict(vac_vec)[0]
-            sims = sims + CATEGORY_BOOST * (cand_cats_pred == vac_cat)
+            if use_boost and not _is_russian(vac_text):
+                vac_cat = classifier.predict(vac_vec)[0]
+                sims = sims + CATEGORY_BOOST * (cand_cats_pred == vac_cat)
 
-        top_idx = np.argsort(-sims)[:top_k]
-        hits = [resume_cats[i] == expected_cat for i in top_idx]
-        top1_cat = resume_cats[top_idx[0]] if len(top_idx) else "—"
+            top_idx = np.argsort(-sims)[:top_k]
+            hits = [resume_cats[i] == expected_cat for i in top_idx]
+            top1_cat = resume_cats[top_idx[0]] if len(top_idx) else "—"
 
-        metric_rows.append({
-            "category": expected_cat,
-            "title": title,
-            "n_relevant": n_relevant,
-            "p@1":    p_at_k(hits, 1),
-            "p@3":    p_at_k(hits, 3),
-            "p@5":    p_at_k(hits, 5),
-            "p@10":   p_at_k(hits, 10),
-            "mrr":    mrr(hits),
-            "ndcg@5": ndcg_at_k(hits, 5, n_relevant),
-            "top1_cat": top1_cat,
-        })
+            metric_rows.append({
+                "category": expected_cat,
+                "title": title,
+                "n_relevant": n_relevant,
+                "p@1":    p_at_k(hits, 1),
+                "p@3":    p_at_k(hits, 3),
+                "p@5":    p_at_k(hits, 5),
+                "p@10":   p_at_k(hits, 10),
+                "mrr":    mrr(hits),
+                "ndcg@5": ndcg_at_k(hits, 5, n_relevant),
+                "top1_cat": top1_cat,
+            })
+        
+        # Calculate macro averages
+        n_cats = len(metric_rows)
+        averages = {}
+        for metric in ("p@1", "p@3", "p@5", "p@10", "mrr", "ndcg@5"):
+            averages[metric] = sum(row[metric] for row in metric_rows) / n_cats if n_cats else 0.0
+        results[run_name] = (metric_rows, averages)
 
-    print_metric_table(metric_rows, total_candidates)
+    # 5. Print the full detailed table for the Boosted run
+    print("\nDetailed Per-Category Metrics for [TF-IDF + LogReg Boost]:")
+    print_metric_table(results["TF-IDF + LogReg Boost"][0], total_candidates)
+
+    # 6. Print the side-by-side comparison table
+    standalone_avg = results["Standalone TF-IDF"][1]
+    boosted_avg = results["TF-IDF + LogReg Boost"][1]
+
+    print("\n" + "=" * 76)
+    print("📊 COMPARISON: Standalone TF-IDF vs. TF-IDF + LogReg Category Boost")
+    print("=" * 76)
+    print(f"{'Metric':<10} {'Standalone TF-IDF':<22} {'TF-IDF + LogReg Boost':<24} {'Delta'}")
+    print("-" * 76)
+    for metric in ("p@1", "p@3", "p@5", "p@10", "mrr", "ndcg@5"):
+        v_std = standalone_avg[metric]
+        v_bst = boosted_avg[metric]
+        diff = v_bst - v_std
+        if v_std > 0:
+            pct = (diff / v_std) * 100
+            pct_str = f" ({pct:+.1f}%)"
+        else:
+            pct_str = ""
+        print(f"{metric.upper():<10} {v_std:<22.4f} {v_bst:<24.4f} {diff:+.4f}{pct_str}")
+    print("=" * 76)
 
 
 async def main_async(skip_import: bool) -> None:

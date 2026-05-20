@@ -40,7 +40,7 @@ app.conf.update(
     accept_content=["json"],
     result_serializer="json",
     result_backend=BROKER_URL,
-    timezone="UTC",
+    timezone="Asia/Almaty",
     enable_utc=True,
     # Beat schedule — pull + parse every 5 minutes.
     beat_schedule={
@@ -90,6 +90,8 @@ async def _ingest_one(att) -> bool:
             temp_path.unlink(missing_ok=True)
             return False
 
+        from sqlalchemy.exc import IntegrityError
+
         cand = Candidate(
             source_file=str(temp_path),
             content_hash=att.content_hash,
@@ -100,8 +102,16 @@ async def _ingest_one(att) -> bool:
             parsed_json=parsed.model_dump(exclude={"raw_text", "embedding"}),
         )
         session.add(cand)
-        await session.commit()
-        await session.refresh(cand)
+        try:
+            await session.commit()
+            await session.refresh(cand)
+        except IntegrityError:
+            log.info(
+                "candidate_dupe_race_on_commit",
+                hash=att.content_hash[:12],
+            )
+            temp_path.unlink(missing_ok=True)
+            return False
 
         final_path = final_path_for(
             settings.paths.cvs, cand.id, att.sanitized_basename

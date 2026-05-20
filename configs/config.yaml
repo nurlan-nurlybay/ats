@@ -25,7 +25,7 @@ models:
 
 matching:
   top_k: 5
-  default_strategy: semantic
+  default_strategy: rrf
   llm:
     shortlist_size: 15      # how many candidates the retriever fetches before LLM rerank
     max_concurrent: 5       # semaphore cap on in-flight LLM calls (DashScope rate limit guard)

@@ -44,6 +44,7 @@ FROM base AS builder
 # `pip install .` after the real src/ lands.
 COPY pyproject.toml README.md ./
 RUN mkdir -p src/ats && touch src/ats/__init__.py && \
+    pip install --extra-index-url https://download.pytorch.org/whl/cpu torch && \
     pip install .
 
 # Layer B: spaCy bilingual models — needed by ats.ingestion.parser.ner.

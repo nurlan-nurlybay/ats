@@ -235,3 +235,8 @@ data/processed/*
 
 # data/eval/ — dev-only data; Resume.csv is 60 MB and reproducible from Kaggle
 data/eval/Resume.csv
+
+# Prevent committing personal resumes in the workspace
+*.pdf
+*.docx
+*.doc

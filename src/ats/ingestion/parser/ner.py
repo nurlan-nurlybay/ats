@@ -280,7 +280,7 @@ _MONTH_YEAR_RANGE_RE = re.compile(
     r"\s*[—–\-→]\s*"
     r"(?P<end>" + _DATE_ATOM + r"|" + _PRESENT + r")",
     re.IGNORECASE,
-)
+) 
 
 # 3. Standalone date — graduation year / single mention. Catches single
 #    `YYYY`, `Month YYYY`, or `MM/YYYY` that aren't part of a matched range.

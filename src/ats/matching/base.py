@@ -1,6 +1,6 @@
 """Strategy interface for the matching engine.
 
-`MatchingStrategy` is the ABC that semantic / TF-IDF / LLM matchers
+`MatchingStrategy` is the ABC that semantic / TF-IDF / RRF / LLM matchers
 implement. `CandidateMatch` is the shared output schema — FastAPI returns
 it directly, Streamlit consumes it for rendering.
 """
@@ -25,7 +25,7 @@ class CandidateMatch(BaseModel):
     email: str | None
     source_file: str
     score: float                       # ∈ [0, 1] — higher = better
-    strategy: str                      # "semantic" / "tfidf" / "llm"
+    strategy: str                      # "semantic" / "tfidf" / / "rrf" / "llm"
     explanation: str | None = None     # populated by the LLM strategy
     parsed_json: dict | None = None    # full ParsedResume minus raw_text / embedding
 

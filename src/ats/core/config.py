@@ -138,7 +138,7 @@ class LLMMatchingConfig(BaseModel):
 
 class MatchingConfig(BaseModel):
     top_k: int
-    default_strategy: Literal["semantic", "tfidf", "llm"]
+    default_strategy: Literal["semantic", "tfidf", "llm", "rrf"]
     llm: LLMMatchingConfig = LLMMatchingConfig()
 
     model_config = ConfigDict(frozen=True)
