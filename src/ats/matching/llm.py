@@ -35,7 +35,7 @@ from ats.matching.base import (
     MatchingStrategy,
     VacancyNotFound,
 )
-from ats.matching.semantic import SemanticMatcher
+from ats.matching.rrf import RrfMatcher
 
 log = get_logger(__name__)
 
@@ -180,7 +180,7 @@ class LlmMatcher(MatchingStrategy):
         retriever: MatchingStrategy | None = None,
         shortlist_size: int | None = None,
     ) -> None:
-        self.retriever = retriever or SemanticMatcher()
+        self.retriever = retriever or RrfMatcher()
         self.shortlist_size = shortlist_size or settings.matching.llm.shortlist_size
         self._sema = asyncio.Semaphore(settings.matching.llm.max_concurrent)
 
